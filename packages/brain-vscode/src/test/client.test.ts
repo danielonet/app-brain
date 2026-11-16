@@ -12,7 +12,7 @@ describe("BrainClient against the real brain-mcp", () => {
   before(() => {
     ws = mkdtempSync(path.join(tmpdir(), "brain-client-"));
     mkdirSync(path.join(ws, "src"));
-    writeFileSync(path.join(ws, "src/a.ts"), "export const a = 1;\n");
+    writeFileSync(path.join(ws, "src/a.ts"), "/** Adds numbers. */\nexport function addNumbers(a: number, b: number) { return a + b; }\n");
     writeFileSync(path.join(ws, "src/b.py"), "b = 2\n");
   });
   after(() => rmSync(ws, { recursive: true, force: true }));
@@ -43,6 +43,12 @@ describe("BrainClient against the real brain-mcp", () => {
     await c.refresh();
     assert.equal(c.current?.initialised, true);
     assert.equal(c.current?.index.files, 2);
+    assert.equal(c.current?.index.symbols, 1);
+
+    const hits = await c.search("add numbers");
+    assert.equal(hits[0].symbol, "addNumbers");
+    assert.equal(hits[0].path, "src/a.ts");
+    assert.equal(hits[0].lines, "2-2");
 
     await c.stop();
     assert.equal(events.at(-1)?.conn, "disconnected");

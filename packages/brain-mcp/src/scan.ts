@@ -14,7 +14,7 @@ const LANGUAGE_BY_EXT: Record<string, string> = {
 };
 
 /** Directories never indexed, whatever the config says. */
-const ALWAYS_SKIP_DIRS = new Set([".git", "node_modules", ".brain", "dist", "out", "build", "target", "__pycache__", ".venv", "venv"]);
+export const ALWAYS_SKIP_DIRS = new Set([".git", "node_modules", ".brain", "dist", "out", "build", "target", "__pycache__", ".venv", "venv"]);
 
 /**
  * Files that may contain secrets. Never indexed, never sent to an LLM, whatever
@@ -56,6 +56,8 @@ export interface ScanOptions {
 export interface ScannedFile {
   path: string; // posix, relative to workspace
   language: string;
+  size: number;
+  mtimeMs: number;
 }
 
 async function listWithGit(workspace: string): Promise<string[] | null> {
@@ -102,12 +104,14 @@ export async function scanWorkspace(opts: ScanOptions): Promise<ScannedFile[]> {
     const language = languageOf(rel);
     if (!language) continue;
     if (wanted.size > 0 && !wanted.has(language)) continue;
+    let st;
     try {
-      if (!(await fs.stat(path.join(opts.workspace, rel))).isFile()) continue; // deleted, or a submodule
+      st = await fs.stat(path.join(opts.workspace, rel));
+      if (!st.isFile()) continue; // a submodule or directory
     } catch {
       continue; // listed by git but missing on disk
     }
-    files.push({ path: rel, language });
+    files.push({ path: rel, language, size: st.size, mtimeMs: st.mtimeMs });
   }
   return files.sort((a, b) => a.path.localeCompare(b.path));
 }

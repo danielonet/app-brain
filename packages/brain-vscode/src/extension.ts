@@ -1,10 +1,31 @@
 import * as path from "node:path";
 import * as vscode from "vscode";
-import type { BrainStatus } from "@app-brain/brain-protocol";
+import type { BrainStatus, UsageSummary } from "@app-brain/brain-protocol";
 import { BrainClient } from "./client";
-import { ConnState, mcpConfigSnippet, statusBarText } from "./format";
+import { ActivityItem, ConnState, activityItems, flashText, mcpConfigSnippet, statusBarText } from "./format";
 
 let client: BrainClient | undefined;
+
+class ActivityProvider implements vscode.TreeDataProvider<ActivityItem> {
+  private readonly changed = new vscode.EventEmitter<void>();
+  readonly onDidChangeTreeData = this.changed.event;
+  private items: ActivityItem[] = activityItems(null);
+
+  update(usage: UsageSummary | null) {
+    this.items = activityItems(usage);
+    this.changed.fire();
+  }
+  getChildren(): ActivityItem[] {
+    return this.items;
+  }
+  getTreeItem(i: ActivityItem): vscode.TreeItem {
+    const t = new vscode.TreeItem(i.label);
+    t.description = i.description;
+    t.tooltip = i.tooltip;
+    if (i.error) t.iconPath = new vscode.ThemeIcon("error", new vscode.ThemeColor("errorForeground"));
+    return t;
+  }
+}
 
 function resolveServerPath(): string {
   const configured = vscode.workspace.getConfiguration("brain").get<string>("server.path", "").trim();
@@ -22,8 +43,28 @@ export async function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(out, bar);
   bar.show();
 
+  const activity = new ActivityProvider();
+  context.subscriptions.push(vscode.window.registerTreeDataProvider("brain.activity", activity));
+
+  // Level 1 of "did the agent use the brain": show it the moment a tool is called.
+  let lastSeenCall = -1;
+  let flashTimer: NodeJS.Timeout | undefined;
+  const onUsage = (usage: UsageSummary) => {
+    activity.update(usage);
+    const newest = usage.recent[0];
+    if (!newest) return;
+    if (lastSeenCall >= 0 && newest.id > lastSeenCall) {
+      bar.text = flashText(newest);
+      if (flashTimer) clearTimeout(flashTimer);
+      flashTimer = setTimeout(() => onState(lastConn, client?.current ?? null), 4000);
+    }
+    lastSeenCall = newest.id;
+  };
+
+  let lastConn: ConnState = "connecting";
   let promptedInit = false;
   const onState = (conn: ConnState, status: BrainStatus | null) => {
+    lastConn = conn;
     const view = statusBarText(conn, status);
     bar.text = view.text;
     bar.tooltip = view.tooltip;
@@ -45,6 +86,7 @@ export async function activate(context: vscode.ExtensionContext) {
       outputDir: cfg().get<string>("outputDir", ".brain"),
       log: (l) => out.appendLine(l),
       onState,
+      onUsage,
     });
 
   const run = async (label: string, fn: () => Promise<unknown>) => {
@@ -82,6 +124,7 @@ export async function activate(context: vscode.ExtensionContext) {
         void vscode.window.setStatusBarMessage(`Brain: indexed ${r.files} files in ${r.durationMs} ms`, 4000);
       }),
     ),
+    vscode.commands.registerCommand("brain.search", () => searchSymbols(() => client, folder.uri.fsPath)),
     vscode.commands.registerCommand("brain.openOutputFolder", () => {
       const dir = vscode.Uri.file(path.join(folder.uri.fsPath, cfg().get<string>("outputDir", ".brain")));
       return vscode.commands.executeCommand("revealFileInOS", dir);
@@ -114,6 +157,53 @@ export async function activate(context: vscode.ExtensionContext) {
   }
 
   await client.start();
+}
+
+/** Quick pick over `search_code`: the same index agents use, so you can see what they would find. */
+async function searchSymbols(getClient: () => BrainClient | undefined, root: string) {
+  const qp = vscode.window.createQuickPick<vscode.QuickPickItem & { path: string; line: number }>();
+  qp.placeholder = "Search symbols: a name, or what it does (e.g. “user by id”)";
+  qp.matchOnDescription = true;
+  qp.matchOnDetail = true;
+  let timer: NodeJS.Timeout | undefined;
+  let seq = 0;
+  qp.onDidChangeValue((value) => {
+    if (timer) clearTimeout(timer);
+    if (!value.trim()) {
+      qp.items = [];
+      return;
+    }
+    timer = setTimeout(async () => {
+      const mine = ++seq;
+      qp.busy = true;
+      try {
+        const hits = (await getClient()?.search(value)) ?? [];
+        if (mine !== seq) return; // a newer keystroke is already in flight
+        qp.items = hits.map((h) => ({
+          label: `$(symbol-${h.kind === "class" ? "class" : h.kind === "interface" ? "interface" : h.kind === "method" ? "method" : "function"}) ${h.symbol}`,
+          description: `${h.path}:${h.lines.split("-")[0]}`,
+          detail: h.signature,
+          path: h.path,
+          line: Number(h.lines.split("-")[0]),
+          alwaysShow: true,
+        }));
+      } catch (e) {
+        void vscode.window.showErrorMessage(`Brain search failed: ${(e as Error).message}`);
+      } finally {
+        if (mine === seq) qp.busy = false;
+      }
+    }, 150);
+  });
+  qp.onDidAccept(async () => {
+    const pick = qp.selectedItems[0];
+    qp.hide();
+    if (!pick) return;
+    const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(path.join(root, pick.path)));
+    const pos = new vscode.Position(Math.max(0, pick.line - 1), 0);
+    await vscode.window.showTextDocument(doc, { selection: new vscode.Range(pos, pos) });
+  });
+  qp.onDidHide(() => qp.dispose());
+  qp.show();
 }
 
 export async function deactivate() {

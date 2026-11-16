@@ -6,7 +6,7 @@
 import { z } from "zod";
 
 /** Bumped on any breaking change to tools, resources or schemas below. */
-export const PROTOCOL_VERSION = "0.1";
+export const PROTOCOL_VERSION = "0.2";
 
 /** OKF spec version the knowledge bundle is written in (PLAN-VSCODE-EXTENSION.md §5). */
 export const OKF_VERSION = "0.2";
@@ -16,7 +16,19 @@ export const DEFAULT_OUTPUT_DIR = ".brain";
 export const Resources = {
   status: "brain://status",
   config: "brain://config",
+  usage: "brain://usage",
 } as const;
+
+/** Read-only tools for agents. Available to every client, no admin token. */
+export const AgentTools = {
+  searchCode: "search_code",
+  getSymbol: "get_symbol",
+  getNeighbors: "get_neighbors",
+  impactOfChange: "impact_of_change",
+} as const;
+
+export const SYMBOL_KINDS = ["function", "class", "method", "interface", "type", "enum", "variable"] as const;
+export type SymbolKind = (typeof SYMBOL_KINDS)[number];
 
 export const AdminTools = {
   hello: "brain_admin_hello",
@@ -86,6 +98,8 @@ export const StatusSchema = z.object({
   startedAt: z.string(),
   index: z.object({
     files: z.number().int().nonnegative(),
+    symbols: z.number().int().nonnegative(),
+    edges: z.number().int().nonnegative(),
     byLanguage: z.record(z.number().int().nonnegative()),
     lastIndexedAt: z.string().nullable(),
   }),
@@ -114,6 +128,10 @@ export type InitResult = z.infer<typeof InitResultSchema>;
 
 export const ReindexResultSchema = z.object({
   files: z.number().int().nonnegative(),
+  symbols: z.number().int().nonnegative(),
+  edges: z.number().int().nonnegative(),
+  changed: z.number().int().nonnegative().describe("Files parsed again because they were new or modified."),
+  removed: z.number().int().nonnegative(),
   byLanguage: z.record(z.number().int().nonnegative()),
   durationMs: z.number().nonnegative(),
 });
@@ -124,3 +142,27 @@ export interface ConfigError {
   path: string;
   message: string;
 }
+
+// ---------------------------------------------------------------------------
+// Agent usage log: `brain://usage` (PLAN-VSCODE-EXTENSION.md §4.4, level 1)
+// ---------------------------------------------------------------------------
+
+export const UsageEntrySchema = z.object({
+  id: z.number().int(),
+  ts: z.string(),
+  client: z.string().describe("MCP clientInfo.name from the initialize handshake."),
+  tool: z.string(),
+  args: z.string().describe("JSON of the arguments, truncated."),
+  resultTokens: z.number().int().nonnegative().describe("Estimated tokens returned (characters / 4)."),
+  latencyMs: z.number().nonnegative(),
+  isError: z.boolean(),
+});
+export type UsageEntry = z.infer<typeof UsageEntrySchema>;
+
+export const UsageSummarySchema = z.object({
+  total: z.number().int().nonnegative(),
+  byClient: z.record(z.number().int().nonnegative()),
+  byTool: z.record(z.number().int().nonnegative()),
+  recent: z.array(UsageEntrySchema),
+});
+export type UsageSummary = z.infer<typeof UsageSummarySchema>;

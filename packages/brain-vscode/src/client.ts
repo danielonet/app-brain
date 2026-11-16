@@ -11,6 +11,7 @@ import {
   PROTOCOL_VERSION,
   ReindexResult,
   Resources,
+  UsageSummary,
 } from "@app-brain/brain-protocol";
 import type { ConnState } from "./format";
 
@@ -21,6 +22,16 @@ export interface BrainClientOptions {
   outputDir: string;
   log: (line: string) => void;
   onState: (state: ConnState, status: BrainStatus | null) => void;
+  onUsage?: (usage: UsageSummary) => void;
+}
+
+export interface SearchHit {
+  symbol: string;
+  kind: string;
+  path: string;
+  lines: string;
+  signature: string;
+  doc: string | null;
 }
 
 /**
@@ -56,6 +67,7 @@ export class BrainClient {
       client.onerror = (e) => this.opts.log(`client error: ${e.message}`);
       client.setNotificationHandler(ResourceUpdatedNotificationSchema, (n) => {
         if (n.params.uri === Resources.status) void this.refresh();
+        else if (n.params.uri === Resources.usage) void this.refreshUsage();
       });
       await client.connect(transport);
       this.client = client;
@@ -67,8 +79,10 @@ export class BrainClient {
       });
       if (!hello.admin) throw new Error("Server refused the admin handshake.");
       await client.subscribeResource({ uri: Resources.status });
+      await client.subscribeResource({ uri: Resources.usage });
       this.restarts = 0;
       await this.refresh();
+      await this.refreshUsage();
     } catch (e) {
       this.opts.log(`start failed: ${(e as Error).message}`);
       await this.teardown();
@@ -113,6 +127,18 @@ export class BrainClient {
     const res = await this.client.readResource({ uri: Resources.status });
     this.status = JSON.parse((res.contents[0] as { text: string }).text) as BrainStatus;
     this.opts.onState("connected", this.status);
+  }
+
+  async refreshUsage(): Promise<void> {
+    if (!this.client || !this.opts.onUsage) return;
+    const res = await this.client.readResource({ uri: Resources.usage });
+    this.opts.onUsage(JSON.parse((res.contents[0] as { text: string }).text) as UsageSummary);
+  }
+
+  /** Symbol search for the quick pick. Calls made as "brain-vscode" are not counted as agent usage. */
+  async search(query: string, limit = 20): Promise<SearchHit[]> {
+    const r = await this.call<{ results: SearchHit[] }>("search_code", { query, limit });
+    return r.results;
   }
 
   private async call<T>(name: string, args: Record<string, unknown> = {}): Promise<T> {

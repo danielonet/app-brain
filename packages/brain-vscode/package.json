@@ -20,11 +20,18 @@
     "mcpServerDefinitionProviders": [
       { "id": "brain.mcp", "label": "App Brain" }
     ],
+    "viewsContainers": {
+      "activitybar": [{ "id": "brain", "title": "App Brain", "icon": "$(book)" }]
+    },
+    "views": {
+      "brain": [{ "id": "brain.activity", "name": "Agent Activity" }]
+    },
     "commands": [
       { "command": "brain.initialise", "title": "Brain: Initialise" },
       { "command": "brain.start", "title": "Brain: Start Server" },
       { "command": "brain.stop", "title": "Brain: Stop Server" },
       { "command": "brain.reindex", "title": "Brain: Reindex Workspace" },
+      { "command": "brain.search", "title": "Brain: Search Symbols" },
       { "command": "brain.openOutputFolder", "title": "Brain: Open Output Folder" },
       { "command": "brain.showLogs", "title": "Brain: Show Server Logs" },
       { "command": "brain.copyMcpConfig", "title": "Brain: Copy MCP Config for Claude Code" }
