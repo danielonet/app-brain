@@ -1,5 +1,8 @@
 import type { DaemonLlm } from "./daemonManager";
-import { ENV_LLM_API_KEY, ENV_LLM_BASE_URL, ENV_LLM_EFFORT, ENV_LLM_MODE, ENV_LLM_MODEL, LLM_MODES } from "@app-brain/brain-protocol";
+import {
+  ENV_LLM_API_KEY, ENV_LLM_BASE_URL, ENV_LLM_CONTEXT_TOKENS, ENV_LLM_EFFORT, ENV_LLM_MAX_OUTPUT_TOKENS, ENV_LLM_MODE, ENV_LLM_MODEL, ENV_LLM_TIMEOUT_MS,
+  LLM_MODES, LOCAL_PRESETS, MIN_CONTEXT_TOKENS, type LocalPreset,
+} from "@app-brain/brain-protocol";
 
 /** Pure (no `vscode` import) so the rules about what reaches the server are tested. */
 export interface LlmSettings {
@@ -7,6 +10,33 @@ export interface LlmSettings {
   model: string;
   baseUrl: string;
   effort: string;
+  /** Local mode only. Optional so settings written before they existed still work. */
+  preset?: string;
+  contextTokens?: number;
+  maxOutputTokens?: number;
+  timeoutSeconds?: number;
+}
+
+/** The URL a local server is reached at: an explicit one wins, else the preset's well-known address. */
+export function localBaseUrl(s: Pick<LlmSettings, "baseUrl" | "preset">): string {
+  const explicit = s.baseUrl.trim();
+  if (explicit) return explicit;
+  const preset = (s.preset ?? "ollama") as LocalPreset;
+  return LOCAL_PRESETS[preset]?.baseUrl ?? "";
+}
+
+/** Problems with the local settings that would make a run fail or silently give poor results, in words to act on. */
+export function localProblems(s: LlmSettings): string[] {
+  if (s.mode !== "local") return [];
+  const out: string[] = [];
+  if (!s.model.trim()) out.push("Set “brain.llm.model” to the model your local server runs. “Brain: Choose Local Model” lists what it has.");
+  if (!localBaseUrl(s)) out.push("The “custom” preset needs “brain.llm.baseUrl”: your server's OpenAI-compatible URL, usually ending in /v1.");
+  else {
+    try { new URL(localBaseUrl(s)); } catch { out.push(`“${localBaseUrl(s)}” is not a valid URL.`); }
+  }
+  const ctx = s.contextTokens;
+  if (ctx !== undefined && ctx > 0 && ctx < MIN_CONTEXT_TOKENS) out.push(`The context window (${ctx} tokens) is too small to document code. Use at least ${MIN_CONTEXT_TOKENS}, and run the model with that much.`);
+  return out;
 }
 
 /**
@@ -22,12 +52,17 @@ export function llmEnv(s: LlmSettings, apiKey: string | undefined): Record<strin
   const model = s.model.trim();
   if (model) env[ENV_LLM_MODEL] = model;
   if (mode === "api-key" || mode === "local") {
-    const base = s.baseUrl.trim();
+    const base = mode === "local" ? localBaseUrl(s) : s.baseUrl.trim();
     if (base) env[ENV_LLM_BASE_URL] = base;
     const key = apiKey?.trim();
     if (key) env[ENV_LLM_API_KEY] = key;
   }
   if (mode === "api-key" && s.effort.trim()) env[ENV_LLM_EFFORT] = s.effort.trim();
+  if (mode === "local") {
+    if ((s.contextTokens ?? 0) > 0) env[ENV_LLM_CONTEXT_TOKENS] = String(Math.floor(s.contextTokens!));
+    if ((s.maxOutputTokens ?? 0) > 0) env[ENV_LLM_MAX_OUTPUT_TOKENS] = String(Math.floor(s.maxOutputTokens!));
+    if ((s.timeoutSeconds ?? 0) > 0) env[ENV_LLM_TIMEOUT_MS] = String(Math.floor(s.timeoutSeconds! * 1000));
+  }
   return env;
 }
 
@@ -49,5 +84,6 @@ export function daemonLlm(s: LlmSettings, apiKey: string | undefined): DaemonLlm
   return {
     mode: env[ENV_LLM_MODE] ?? "agent", model: env[ENV_LLM_MODEL] ?? "", baseUrl: env[ENV_LLM_BASE_URL] ?? "",
     effort: env[ENV_LLM_EFFORT] ?? "", apiKey: env[ENV_LLM_API_KEY] ?? "",
+    contextTokens: Number(env[ENV_LLM_CONTEXT_TOKENS]) || 0, maxOutputTokens: Number(env[ENV_LLM_MAX_OUTPUT_TOKENS]) || 0, timeoutMs: Number(env[ENV_LLM_TIMEOUT_MS]) || 0,
   };
 }

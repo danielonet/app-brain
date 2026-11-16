@@ -127,11 +127,14 @@ export interface LlmFingerprintInput {
   baseUrl: string;
   effort: string;
   apiKey: string;
+  contextTokens?: number;
+  maxOutputTokens?: number;
+  timeoutMs?: number;
 }
 
 /** Keyed with the agent token, so the fingerprint of a key is useless to anything that lacks that token. */
 export function llmFingerprint(secret: string, s: LlmFingerprintInput): string {
-  return createHmac("sha256", secret).update(JSON.stringify([s.mode, s.model, s.baseUrl, s.effort, s.apiKey])).digest("hex").slice(0, 32);
+  return createHmac("sha256", secret).update(JSON.stringify([s.mode, s.model, s.baseUrl, s.effort, s.apiKey, s.contextTokens ?? 0, s.maxOutputTokens ?? 0, s.timeoutMs ?? 0])).digest("hex").slice(0, 32);
 }
 
 /** What the extension hands the daemon on stdin: secrets must not be on the command line or in the environment. */
@@ -143,6 +146,9 @@ export const DaemonSecretsSchema = z.object({
     baseUrl: z.string().default(""),
     effort: z.string().default(""),
     apiKey: z.string().default(""),
+    contextTokens: z.number().int().min(0).default(0),
+    maxOutputTokens: z.number().int().min(0).default(0),
+    timeoutMs: z.number().int().min(0).default(0),
   }).default({}),
 });
 export type DaemonSecrets = z.infer<typeof DaemonSecretsSchema>;

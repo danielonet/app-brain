@@ -484,7 +484,7 @@ describe("server-side doc generation", () => {
       const est = (await tool(s.admin, AdminTools.estimateGeneration)).body;
       assert.equal(est.canStart, true, est.blocked);
       assert.deepEqual(est.totals.costUsd, { low: 0, high: 0 });
-      assert.ok(est.warnings.some((w: string) => /nothing leaves this machine/.test(w)));
+      assert.ok(est.warnings.some((w: string) => /Runs on this machine; nothing leaves it/.test(w)));
       await start(s);
       const job = await s.job();
       assert.deepEqual([job.state, job.drafted, job.spendUsd], ["done", 7, 0]);

@@ -1,5 +1,6 @@
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import {
+  ENV_LLM_CONTEXT_TOKENS, ENV_LLM_MAX_OUTPUT_TOKENS, ENV_LLM_TIMEOUT_MS, LOCAL_DEFAULT_CONTEXT_TOKENS, LOCAL_DEFAULT_MAX_OUTPUT_TOKENS,
   DEFAULT_ANTHROPIC_MODEL, DEFAULT_LOCAL_BASE_URL, ENV_LLM_API_KEY, ENV_LLM_BASE_URL, ENV_LLM_EFFORT, ENV_LLM_MODE, ENV_LLM_MODEL,
   LLM_MODES, type LlmMode,
 } from "@app-brain/brain-protocol";
@@ -16,6 +17,11 @@ export interface LlmSetup {
   provider: LlmProvider | null;
   problem: string | null;
 }
+
+const positiveInt = (v: string | undefined): number | undefined => {
+  const n = Number(v);
+  return v !== undefined && v.trim() !== "" && Number.isInteger(n) && n > 0 ? n : undefined;
+};
 
 const EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
 
@@ -43,7 +49,15 @@ export function llmFromEnv(env: NodeJS.ProcessEnv, server: Server): LlmSetup {
     case "local": {
       if (!model) return { mode, model: null, provider: null, problem: "Set “brain.llm.model” to the model your local server runs (for example llama3.1)." };
       const baseUrl = env[ENV_LLM_BASE_URL]?.trim() || DEFAULT_LOCAL_BASE_URL;
-      return { mode, model, provider: new OpenAiCompatProvider({ baseUrl, model, apiKey: env[ENV_LLM_API_KEY]?.trim() || undefined }), problem: null };
+      return {
+        mode, model, problem: null,
+        provider: new OpenAiCompatProvider({
+          baseUrl, model, apiKey: env[ENV_LLM_API_KEY]?.trim() || undefined,
+          contextTokens: positiveInt(env[ENV_LLM_CONTEXT_TOKENS]) ?? LOCAL_DEFAULT_CONTEXT_TOKENS,
+          maxOutputTokens: positiveInt(env[ENV_LLM_MAX_OUTPUT_TOKENS]) ?? LOCAL_DEFAULT_MAX_OUTPUT_TOKENS,
+          timeoutMs: positiveInt(env[ENV_LLM_TIMEOUT_MS]),
+        }),
+      };
     }
     case "vscode-lm": {
       if (!SamplingProvider.available(server)) return { mode, model, provider: null, problem: "The editor is not connected, or it cannot run prompts for the server. Use the VS Code extension." };

@@ -24,6 +24,7 @@ import { Indexer } from "./indexer";
 import { summarize, toCsv, toMarkdown } from "./cost";
 import { Generator } from "./generate/generator";
 import { llmFromEnv } from "./llm/factory";
+import { listLlmModels, testLlm } from "./llm/diagnose";
 import { SamplingProvider } from "./llm/sampling";
 import { buildGraph, toJsonLd } from "./okf/graph";
 import { Knowledge } from "./okf/knowledge";
@@ -592,6 +593,24 @@ export function createBrainCore(opts: BrainServerOptions) {
     guarded(async ({ confirm: _confirm, ...scope }: Record<string, unknown>) => {
       try {
         return json(await generator.start(scope));
+      } catch (e) {
+        return fail((e as Error).message);
+      }
+    }),
+  );
+
+  server.registerTool(
+    AdminTools.testLlm,
+    { description: "Try the configured LLM with a tiny request and explain what is wrong if it fails: server not running, model missing, window too small, key rejected. Free for a local model; a fraction of a cent for a paid API." },
+    guarded(async () => json(await testLlm(llm()))),
+  );
+
+  server.registerTool(
+    AdminTools.listLlmModels,
+    { description: "The models a local LLM server offers (GET /models), so one can be picked instead of typed. Local mode only." },
+    guarded(async () => {
+      try {
+        return json(await listLlmModels(llm()));
       } catch (e) {
         return fail((e as Error).message);
       }

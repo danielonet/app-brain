@@ -376,7 +376,7 @@ export class Knowledge {
     /** Set when the server itself called the model: exact usage replaces what an agent would report. */
     generation?: {
       mode: "api-key" | "local" | "vscode-lm"; provider: string; tokensIn: number | null; tokensOut: number | null; cachedTokens: number | null;
-      tokensSource: "provider-reported" | "agent-reported" | "estimated"; inputTruncated?: boolean; redactions?: number;
+      tokensSource: "provider-reported" | "agent-reported" | "estimated"; inputTruncated?: boolean; redactions?: number; free?: boolean;
     };
   }): Promise<{ target: string; kind: DocKind; draft: string; conceptPath: string; costUsd: number | null }> {
     if (a.summary.length > MAX_SUMMARY) throw new Error(`Summary is too long (${a.summary.length} characters, max ${MAX_SUMMARY}). Summarise more tightly.`);
@@ -401,7 +401,7 @@ export class Knowledge {
     const tokensSource = g ? g.tokensSource : a.tokensOut !== undefined || a.tokensIn !== undefined ? "agent-reported" : "estimated";
     const mode = g?.mode ?? "agent";
     // A local model costs no money; everything else is priced from the table, or left unknown.
-    const cost = mode === "local" ? 0 : callCost(cfg.pricing, model, { inputTokens: tokensIn, outputTokens: tokensOut, cachedTokens: g?.cachedTokens });
+    const cost = g?.free ? 0 : callCost(cfg.pricing, model, { inputTokens: tokensIn, outputTokens: tokensOut, cachedTokens: g?.cachedTokens });
 
     let lastModified: string | undefined;
     if (t.kind === "file") lastModified = (await fs.stat(abs)).mtime.toISOString();
@@ -441,7 +441,7 @@ export class Knowledge {
     this.store().logLlmCall({
       target: t.target, kind: t.kind, provider: g?.provider ?? null, model, mode,
       inputTokens: tokensIn, outputTokens: tokensOut, cachedTokens: g?.cachedTokens ?? null, tokensSource,
-      costUsd: cost, costSource: cost === null ? null : mode === "local" ? "local" : "price-table", outcome: "generated",
+      costUsd: cost, costSource: cost === null ? null : g?.free ? "local" : "price-table", outcome: "generated",
     });
     this.changed();
     return { target: t.target, kind: t.kind, draft: this.bundle.rel("drafts", conceptPath), conceptPath, costUsd: cost };

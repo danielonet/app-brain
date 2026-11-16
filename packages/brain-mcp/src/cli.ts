@@ -4,7 +4,7 @@ import * as path from "node:path";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
   DAEMON_LOG_FILE, DEFAULT_OUTPUT_DIR, DaemonSecrets, DaemonSecretsSchema, ENV_ADMIN_TOKEN, ENV_IDLE_EXIT_MS, ENV_LLM_API_KEY, ENV_LLM_BASE_URL,
-  ENV_LLM_EFFORT, ENV_LLM_MODE, ENV_LLM_MODEL, ENV_WORKSPACE, ensureRuntimeDir, runtimeDir,
+  ENV_LLM_CONTEXT_TOKENS, ENV_LLM_EFFORT, ENV_LLM_MAX_OUTPUT_TOKENS, ENV_LLM_MODE, ENV_LLM_TIMEOUT_MS, ENV_LLM_MODEL, ENV_WORKSPACE, ensureRuntimeDir, runtimeDir,
 } from "@app-brain/brain-protocol";
 import { DaemonAlreadyRunning, startDaemon } from "./daemon";
 import { findLiveDaemon, runProxy } from "./proxy";
@@ -64,13 +64,16 @@ async function runDaemon(workspace: BrainWorkspace) {
   const adminToken = secrets?.adminToken ?? process.env[ENV_ADMIN_TOKEN];
   delete env[ENV_ADMIN_TOKEN];
   if (secrets) {
-    for (const k of [ENV_LLM_MODE, ENV_LLM_MODEL, ENV_LLM_BASE_URL, ENV_LLM_EFFORT, ENV_LLM_API_KEY]) delete env[k];
+    for (const k of [ENV_LLM_MODE, ENV_LLM_MODEL, ENV_LLM_BASE_URL, ENV_LLM_EFFORT, ENV_LLM_API_KEY, ENV_LLM_CONTEXT_TOKENS, ENV_LLM_MAX_OUTPUT_TOKENS, ENV_LLM_TIMEOUT_MS]) delete env[k];
     const l = secrets.llm;
     if (l.mode && l.mode !== "agent") env[ENV_LLM_MODE] = l.mode;
     if (l.model) env[ENV_LLM_MODEL] = l.model;
     if (l.baseUrl) env[ENV_LLM_BASE_URL] = l.baseUrl;
     if (l.effort) env[ENV_LLM_EFFORT] = l.effort;
     if (l.apiKey) env[ENV_LLM_API_KEY] = l.apiKey;
+    if (l.contextTokens > 0) env[ENV_LLM_CONTEXT_TOKENS] = String(l.contextTokens);
+    if (l.maxOutputTokens > 0) env[ENV_LLM_MAX_OUTPUT_TOKENS] = String(l.maxOutputTokens);
+    if (l.timeoutMs > 0) env[ENV_LLM_TIMEOUT_MS] = String(l.timeoutMs);
   }
 
   process.on("SIGHUP", () => {}); // a daemon outlives the terminal or editor that started it

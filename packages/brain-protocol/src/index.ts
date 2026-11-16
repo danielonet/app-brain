@@ -50,6 +50,8 @@ export const AdminTools = {
   exportGraph: "brain_admin_export_graph",
   exportCostReport: "brain_admin_export_cost_report",
   shutdown: "brain_admin_shutdown",
+  testLlm: "brain_admin_test_llm",
+  listLlmModels: "brain_admin_list_llm_models",
   estimateGeneration: "brain_admin_estimate_generation",
   generateDocs: "brain_admin_generate_docs",
   cancelGeneration: "brain_admin_cancel_generation",
@@ -66,12 +68,29 @@ export const ENV_LLM_MODEL = "BRAIN_LLM_MODEL";
 export const ENV_LLM_BASE_URL = "BRAIN_LLM_BASE_URL";
 export const ENV_LLM_API_KEY = "BRAIN_LLM_API_KEY";
 export const ENV_LLM_EFFORT = "BRAIN_LLM_EFFORT";
+/** The model's context window as it is actually run. Local servers often default to a small one (Ollama: 2 to 4K tokens). */
+export const ENV_LLM_CONTEXT_TOKENS = "BRAIN_LLM_CONTEXT_TOKENS";
+export const ENV_LLM_MAX_OUTPUT_TOKENS = "BRAIN_LLM_MAX_OUTPUT_TOKENS";
+export const ENV_LLM_TIMEOUT_MS = "BRAIN_LLM_TIMEOUT_MS";
 
 /** `agent`: no server-side generation, agents write docs. `vscode-lm`: the editor's models, over MCP sampling. */
 export const LLM_MODES = ["agent", "vscode-lm", "api-key", "local"] as const;
 export type LlmMode = (typeof LLM_MODES)[number];
 export const DEFAULT_ANTHROPIC_MODEL = "claude-opus-5-5";
 export const DEFAULT_LOCAL_BASE_URL = "http://localhost:11434/v1";
+
+/** Where the common local servers listen by default. */
+export const LOCAL_PRESETS = {
+  ollama: { label: "Ollama", baseUrl: "http://localhost:11434/v1" },
+  "lm-studio": { label: "LM Studio", baseUrl: "http://localhost:1234/v1" },
+  "llama-cpp": { label: "llama.cpp server", baseUrl: "http://localhost:8080/v1" },
+  custom: { label: "Custom", baseUrl: "" },
+} as const;
+export type LocalPreset = keyof typeof LOCAL_PRESETS;
+export const LOCAL_DEFAULT_CONTEXT_TOKENS = 8192;
+export const LOCAL_DEFAULT_MAX_OUTPUT_TOKENS = 1500;
+/** Below this there is no room for a document: the prompt's fixed part alone is most of it. */
+export const MIN_CONTEXT_TOKENS = 2048;
 export const ENV_WORKSPACE = "BRAIN_WORKSPACE";
 
 // ---------------------------------------------------------------------------
@@ -444,3 +463,31 @@ export const GenerationStateSchema = z.object({
 export type GenerationState = z.infer<typeof GenerationStateSchema>;
 
 export * from "./daemon";
+
+// ---------------------------------------------------------------------------
+// Testing the LLM connection
+// ---------------------------------------------------------------------------
+
+/** Who can see the code that is sent: this machine only, others on your network, or the internet. */
+export const REACH = ["this-machine", "local-network", "internet"] as const;
+export type Reach = (typeof REACH)[number];
+
+export const LlmTestResultSchema = z.object({
+  ok: z.boolean(),
+  mode: z.enum(LLM_MODES),
+  model: z.string().nullable().describe("The model asked for."),
+  answeredBy: z.string().nullable().describe("The model that actually answered."),
+  endpoint: z.string().nullable(),
+  reach: z.enum(REACH).nullable(),
+  latencyMs: z.number().nullable(),
+  inputTokens: z.number().int().nullable(),
+  outputTokens: z.number().int().nullable(),
+  tokensSource: z.enum(["provider-reported", "agent-reported", "estimated"]).nullable(),
+  reply: z.string().nullable(),
+  modelsAvailable: z.array(z.string()).nullable(),
+  modelFound: z.boolean().nullable(),
+  contextTokens: z.number().int().nullable().describe("The window prompts are sized to, when one is configured."),
+  problems: z.array(z.string()),
+  hints: z.array(z.string()),
+});
+export type LlmTestResult = z.infer<typeof LlmTestResultSchema>;

@@ -1,4 +1,4 @@
-import type { BrainStatus, Estimate, GenerationState, PendingItem, UsageEntry, UsageSummary, ValidationResult } from "@app-brain/brain-protocol";
+import type { BrainStatus, Estimate, LlmTestResult, GenerationState, PendingItem, UsageEntry, UsageSummary, ValidationResult } from "@app-brain/brain-protocol";
 
 /** Pure formatting, kept free of the `vscode` module so it can be unit-tested. */
 export type ConnState = "disconnected" | "connecting" | "connected" | "failed";
@@ -205,4 +205,28 @@ export function generationSummary(g: GenerationState): { text: string; level: "i
 /** One line per problem, for the output channel. */
 export function generationProblems(g: GenerationState): string[] {
   return g.results.filter((r) => r.outcome !== "drafted").map((r) => `${r.outcome.toUpperCase().padEnd(9)} ${r.target}: ${r.message ?? ""}`);
+}
+
+// ---------------------------------------------------------------------------
+// Testing the LLM connection
+// ---------------------------------------------------------------------------
+
+const REACH_TEXT = { "this-machine": "on this machine", "local-network": "on your network", internet: "on the internet" } as const;
+
+/** What to tell the person after "Test LLM Connection": a headline, how loud, and the full story for the output channel. */
+export function llmTestSummary(r: LlmTestResult): { text: string; level: "info" | "warning" | "error"; lines: string[] } {
+  const where = r.reach ? ` ${REACH_TEXT[r.reach]}` : "";
+  const lines = [
+    `LLM test (${r.mode}${r.model ? `, ${r.model}` : ""}${r.endpoint ? `, ${r.endpoint}` : ""})`,
+    ...(r.reach ? [`  Your code goes to a server ${REACH_TEXT[r.reach]}.`] : []),
+    ...(r.latencyMs !== null ? [`  Answered in ${(r.latencyMs / 1000).toFixed(1)}s${r.answeredBy ? ` by ${r.answeredBy}` : ""}${r.reply ? `: “${r.reply}”` : ""}.`] : []),
+    ...(r.inputTokens !== null ? [`  Tokens: ${r.inputTokens} in, ${r.outputTokens ?? "?"} out (${r.tokensSource?.replace("-", " ") ?? "unknown source"}).`] : []),
+    ...(r.contextTokens !== null ? [`  Prompts are sized for a ${r.contextTokens}-token context window.`] : []),
+    ...(r.modelsAvailable ? [`  Models on the server: ${r.modelsAvailable.length ? r.modelsAvailable.join(", ") : "none"}.`] : []),
+    ...r.problems.map((p) => `  PROBLEM: ${p}`),
+    ...r.hints.map((h) => `  Hint: ${h}`),
+  ];
+  if (!r.ok) return { text: `The LLM is not working${where}. ${r.problems[0] ?? ""} ${r.hints[0] ?? ""}`.replace(/\s+/g, " ").trim(), level: "error", lines };
+  if (r.hints.length) return { text: `The LLM works${where} (${(((r.latencyMs ?? 0) / 1000)).toFixed(1)}s), with a note: ${r.hints[0]}`, level: "warning", lines };
+  return { text: `The LLM works${where}: ${r.answeredBy ?? r.model ?? "ok"} answered in ${(((r.latencyMs ?? 0) / 1000)).toFixed(1)}s.`, level: "info", lines };
 }

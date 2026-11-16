@@ -1,4 +1,5 @@
-import { LlmError, type LlmProvider, type LlmRequest, type LlmResponse } from "./types";
+import { classifyHost } from "./host";
+import { LlmError, type LlmLimits, type LlmProvider, type LlmRequest, type LlmResponse } from "./types";
 
 export interface OpenAiCompatOptions {
   baseUrl: string;
@@ -6,6 +7,8 @@ export interface OpenAiCompatOptions {
   /** Optional: local servers (Ollama, llama.cpp, LM Studio) usually need none. */
   apiKey?: string;
   timeoutMs?: number;
+  contextTokens?: number | null;
+  maxOutputTokens?: number;
 }
 
 /**
@@ -15,6 +18,9 @@ export interface OpenAiCompatOptions {
 export class OpenAiCompatProvider implements LlmProvider {
   readonly mode = "local" as const;
   readonly provider = "openai-compatible";
+  readonly limits: LlmLimits;
+  /** Free when it runs on this machine or your own network. An address on the internet is someone's paid service. */
+  readonly free: boolean;
 
   private readonly opts: Omit<OpenAiCompatOptions, "apiKey">;
   private readonly apiKey: string | undefined;
@@ -22,6 +28,34 @@ export class OpenAiCompatProvider implements LlmProvider {
   constructor({ apiKey, ...opts }: OpenAiCompatOptions) {
     this.opts = opts;
     this.apiKey = apiKey;
+    this.limits = { contextTokens: opts.contextTokens ?? null, maxOutputTokens: opts.maxOutputTokens ?? 1500 };
+    this.free = classifyHost(opts.baseUrl)?.reach !== "internet";
+  }
+
+  get baseUrl() {
+    return this.opts.baseUrl;
+  }
+  get endpoint() {
+    return this.opts.baseUrl;
+  }
+
+  /** Model ids the server offers (`GET /models`), so a person can pick one instead of typing it. */
+  async listModels(signal?: AbortSignal): Promise<string[]> {
+    let res: Response;
+    try {
+      res = await fetch(`${this.opts.baseUrl.replace(/\/+$/, "")}/models`, {
+        headers: this.apiKey ? { authorization: `Bearer ${this.apiKey}` } : {},
+        signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(5000)]) : AbortSignal.timeout(5000),
+      });
+    } catch (e) {
+      throw new LlmError(`Could not reach ${this.opts.baseUrl}: ${(e as Error).message}`, "network");
+    }
+    if (!res.ok) throw new LlmError(`${this.opts.baseUrl}/models answered ${res.status}.`, res.status === 401 || res.status === 403 ? "auth" : "bad_request", res.status);
+    const body = (await res.json().catch(() => ({}))) as { data?: { id?: unknown }[]; models?: { name?: unknown; model?: unknown }[] };
+    // OpenAI shape first; Ollama's native listing uses `models[].name`.
+    const ids = (body.data ?? []).map((m) => m.id).filter((x): x is string => typeof x === "string");
+    const alt = (body.models ?? []).map((m) => m.name ?? m.model).filter((x): x is string => typeof x === "string");
+    return [...new Set([...ids, ...alt])].sort();
   }
 
   get model() {
@@ -29,7 +63,7 @@ export class OpenAiCompatProvider implements LlmProvider {
   }
 
   toJSON() {
-    return { provider: this.provider, model: this.opts.model, baseUrl: this.opts.baseUrl };
+    return { provider: this.provider, model: this.opts.model, baseUrl: this.opts.baseUrl, limits: this.limits };
   }
   [Symbol.for("nodejs.util.inspect.custom")]() {
     return `OpenAiCompatProvider(${this.opts.model})`;

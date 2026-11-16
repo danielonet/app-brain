@@ -367,6 +367,45 @@ The graph is the point of choosing OKF, so its construction is explicit.
 
 **LLM modes.** In `agent` mode the server offers `list_undocumented` / `save_summary` to agents and the extension only displays progress. In `vscode-lm` mode the server asks the extension, over an MCP sampling-style request, to run the prompt through VS Code's `vscode.lm` API and return the text, because only the extension can reach that API. `api-key` and `local` modes run entirely in the server.
 
+
+### 6.1 Configuring a local LLM
+
+`local` mode runs doc generation on a model the user hosts (Ollama, LM Studio, llama.cpp's `llama-server`, or any server that speaks the OpenAI chat-completions protocol). It is the answer to "my code must not leave my machine" and to "I do not want a bill", but it fails in ways a paid API does not, so the design treats configuration as more than a URL and a model name.
+
+**What the person configures** (VS Code settings, personal, never committed):
+
+| Setting | Default | Why it exists |
+|---|---|---|
+| `brain.llm.mode` = `local` | `agent` | Selects the mode. Nothing is sent anywhere until the user chooses one |
+| `brain.llm.local.preset` | `ollama` | Fills in the server's usual address: Ollama `:11434`, LM Studio `:1234`, llama.cpp `:8080`, or `custom` |
+| `brain.llm.baseUrl` | empty | Overrides the preset's address (a GPU box on the network, a non-default port) |
+| `brain.llm.model` | required | The model id. **Brain: Choose Local Model** lists what the server actually has, so it is picked, not typed |
+| `brain.llm.local.contextTokens` | 8192 | The context window the server runs the model with. See below |
+| `brain.llm.local.maxOutputTokens` | 1500 | The most the model may write for one doc. Reasoning models need more |
+| `brain.llm.local.timeoutSeconds` | 600 | Local models are slow, and the first request loads the model |
+
+**The context window is the central problem.** Hosted models take hundreds of thousands of tokens. Local servers commonly run a model with 2 to 4K, and the OpenAI-compatible endpoint does not let a client change it. A prompt that is too long is then cut off *by the server, silently*, and the model writes confidently about a file it only half saw. So the generator never relies on the server:
+
+- Every prompt is sized to `contextTokens`, leaving room for the answer (`maxOutputTokens`), the fixed part (rules, symbol list, relationships) and slack for tokenizers that need more tokens per character than our estimate.
+- A source file too long for what is left is cut in the middle, and the doc records `input_truncated: true` in its front matter. A module's long file list is trimmed with a visible "(and N more not shown)". Nothing is cut without being said.
+- A file that would get no usable amount of its code is **skipped and reported with the reason**, never sent as an empty shell. If nothing fits, or the window is below 2,048 tokens, generation does not start and says which setting to change.
+- The estimate warns how many documents will be written from partial input and how many will be skipped, before the person confirms.
+- The window setting only tells *us* what to do; the server must really run the model with that window. The test (below) and the settings text say so, with the Ollama specifics (`OLLAMA_CONTEXT_LENGTH`, or `PARAMETER num_ctx` in a Modelfile).
+
+**"Local" is a URL, and a URL can point anywhere.** The interface must not say "nothing leaves this machine" for a URL that is not on it. The URL is classified (the whole address, not a prefix: `127.0.0.1.evil.com` is the internet):
+
+| Where it points | What the confirmation says | Cost |
+|---|---|---|
+| This machine (`localhost`, `127.x`, `::1`) | "Runs on this machine; nothing leaves it." | Free |
+| Your network (private ranges, `.local`, single-label names) | "Sends your source code to *host* on your network", with "unencrypted" for `http` | Free |
+| The internet | "Sends your source code over the internet to *host*. This is not a local model." (`UNENCRYPTED` for `http`) | **Not assumed free**: priced from the price table like any paid API, and a budget cap cannot start without a price |
+
+**Knowing it works, and why not.** **Brain: Test LLM Connection** runs a one-word request and, for a local server, asks it which models it has. It reports where the code goes, the latency, the token counts, and for every failure a cause and a next step: server not running (with the command to start the one the port suggests), model not pulled (listing what is there, matching Ollama's `:latest` naming), window too small, a URL on the network or internet, a reasoning model that spent its tiny test allowance thinking (not a broken connection). It costs nothing locally and a fraction of a cent on a paid API. The same checks run as a pre-flight when settings are obviously wrong (no model, `custom` without a URL, a window under the minimum).
+
+**Boundaries.** Only the extension may test or list models (admin tools); an agent cannot probe the user's LLM. The API key, if a local gateway needs one, travels like any other secret (stdin to the daemon, never a file). Changing any of these settings replaces the shared daemon, because they are part of its start-up fingerprint.
+
+**Open:** tool use, streaming and structured output are not used, so any chat-completions server works; but quality varies a great deal by model, and the plan makes no claim about which local model is good enough. The cost report marks local calls as free and token counts as reported by the server when it reports usage, else estimated.
+
 ---
 
 ## 7. Implementation structure

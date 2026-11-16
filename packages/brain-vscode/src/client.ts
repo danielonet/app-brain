@@ -17,6 +17,7 @@ import {
   ValidationResult,
   CostSummary,
   Estimate,
+  LlmTestResult,
   GenerationScope,
   GenerationState,
   ReindexResult,
@@ -291,6 +292,12 @@ export class BrainClient {
   /** Starts the job and returns at once. Call only after the person has seen the estimate. */
   generateDocs(scope: Partial<GenerationScope> = {}): Promise<GenerationState> {
     return this.call<GenerationState>(AdminTools.generateDocs, { ...scope, confirm: true });
+  }
+  testLlm(): Promise<LlmTestResult> {
+    return this.call<LlmTestResult>(AdminTools.testLlm);
+  }
+  listLlmModels(): Promise<{ models: string[]; endpoint: string; current: string | null }> {
+    return this.call(AdminTools.listLlmModels);
   }
   cancelGeneration(): Promise<GenerationState> {
     return this.call<GenerationState>(AdminTools.cancelGeneration);

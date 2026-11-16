@@ -75,7 +75,11 @@ describe("the settings offered to the user", () => {
     assert.deepEqual(props["brain.llm.effort"].enum, ["", "low", "medium", "high", "xhigh", "max"]);
   });
   it("has no setting that holds a key: that lives in secret storage", () => {
-    for (const k of Object.keys(props)) assert.ok(!/key|secret|token|password/i.test(k), `${k} looks like it holds a secret`);
+    const COUNTS = new Set(["brain.llm.local.contextTokens", "brain.llm.local.maxOutputTokens"]); // token *counts*, not credentials
+    for (const k of Object.keys(props)) {
+      if (COUNTS.has(k)) { assert.equal(props[k].type, "integer", `${k} must stay a number`); continue; }
+      assert.ok(!/key|secret|token|password/i.test(k), `${k} looks like it holds a secret`);
+    }
   });
 });
 

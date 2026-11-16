@@ -8,8 +8,8 @@ import { BrainClient } from "./client";
 import { CostPanel } from "./costPanel";
 import { GraphPanel } from "./graphPanel";
 import { SettingsPanel } from "./settingsPanel";
-import { ActivityItem, ConnState, ReviewRow, activityItems, estimateDetail, estimateTitle, flashText, generationBarText, generationProblems, generationProgress, generationSummary, mcpConfigSnippet, reviewRows, statusBarText, validationReport, validationSummary } from "./format";
-import { daemonLlm, llmEnv, validateApiKey } from "./llmEnv";
+import { ActivityItem, ConnState, ReviewRow, activityItems, estimateDetail, estimateTitle, flashText, generationBarText, generationProblems, generationProgress, generationSummary, llmTestSummary, mcpConfigSnippet, reviewRows, statusBarText, validationReport, validationSummary } from "./format";
+import { daemonLlm, llmEnv, localProblems, validateApiKey } from "./llmEnv";
 import { ensureDaemon, stopDaemon } from "./daemonManager";
 import { sampleWithEditorModel } from "./lmBridge";
 
@@ -114,6 +114,10 @@ export async function activate(context: vscode.ExtensionContext) {
     model: cfg().get<string>("llm.model", ""),
     baseUrl: cfg().get<string>("llm.baseUrl", ""),
     effort: cfg().get<string>("llm.effort", ""),
+    preset: cfg().get<string>("llm.local.preset", "ollama"),
+    contextTokens: cfg().get<number>("llm.local.contextTokens", 8192),
+    maxOutputTokens: cfg().get<number>("llm.local.maxOutputTokens", 1500),
+    timeoutSeconds: cfg().get<number>("llm.local.timeoutSeconds", 600),
   });
 
   // Generation progress: the status bar shows it, and a running "Generate Docs" command waits on it.
@@ -360,6 +364,47 @@ export async function activate(context: vscode.ExtensionContext) {
       void vscode.window.showInformationMessage("API key removed.");
       await restart();
     }),
+    vscode.commands.registerCommand("brain.testLlm", () =>
+      run("test the LLM", async () => {
+        const problems = localProblems(llmSettings());
+        if (problems.length) {
+          out.appendLine(problems.map((p) => `LLM settings: ${p}`).join("\n"));
+          const pick = await vscode.window.showWarningMessage(problems[0], "Open settings");
+          if (pick) await vscode.commands.executeCommand("workbench.action.openSettings", "brain.llm");
+          return;
+        }
+        const result = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: "Brain: testing the LLM" }, () => client!.testLlm());
+        const summary = llmTestSummary(result);
+        for (const line of summary.lines) out.appendLine(line);
+        const show = summary.level === "error" ? vscode.window.showErrorMessage : summary.level === "warning" ? vscode.window.showWarningMessage : vscode.window.showInformationMessage;
+        const pick = await show(summary.text, "Show details", ...(summary.level === "error" ? ["Open settings"] : []));
+        if (pick === "Show details") out.show(true);
+        if (pick === "Open settings") await vscode.commands.executeCommand("workbench.action.openSettings", "brain.llm");
+      }),
+    ),
+    vscode.commands.registerCommand("brain.chooseLocalModel", () =>
+      run("choose a local model", async () => {
+        if (llmSettings().mode !== "local") {
+          const pick = await vscode.window.showInformationMessage("Local mode is not selected. Use a model on your own machine?", "Use local mode");
+          if (pick !== "Use local mode") return;
+          await cfg().update("llm.mode", "local", vscode.ConfigurationTarget.Global);
+          // Changing the mode restarts the server (and the shared daemon, if its settings differ). Wait until it is back in local mode.
+          for (let i = 0; i < 75 && client?.current?.llm.mode !== "local"; i++) await new Promise((r) => setTimeout(r, 200));
+        }
+        const listing = await client!.listLlmModels();
+        if (listing.models.length === 0) {
+          void vscode.window.showWarningMessage(`${listing.endpoint} lists no models. Pull or load one in your server first.`);
+          return;
+        }
+        const pick = await vscode.window.showQuickPick(
+          listing.models.map((m) => ({ label: m, description: m === listing.current ? "current" : undefined })),
+          { title: `Models on ${listing.endpoint}`, placeHolder: "Pick the model that writes your docs" },
+        );
+        if (!pick) return;
+        await cfg().update("llm.model", pick.label, vscode.ConfigurationTarget.Global);
+        void vscode.window.showInformationMessage(`Using ${pick.label}. Run “Brain: Test LLM Connection” to check it.`);
+      }),
+    ),
     vscode.commands.registerCommand("brain.generateDocs", () => run("generate docs", () => generateDocs())),
     vscode.commands.registerCommand("brain.cancelGeneration", () => run("cancel", async () => void (await client?.cancelGeneration()))),
     vscode.commands.registerCommand("brain.showCost", () => CostPanel.show(context.extensionUri, () => client, folder.uri.fsPath)),

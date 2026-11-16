@@ -12,6 +12,9 @@ export interface DaemonLlm {
   baseUrl: string;
   effort: string;
   apiKey: string;
+  contextTokens?: number;
+  maxOutputTokens?: number;
+  timeoutMs?: number;
 }
 
 export interface EnsureOptions {
@@ -84,7 +87,7 @@ export async function ensureDaemon(o: EnsureOptions): Promise<DaemonHandle> {
     await stopDaemon(existing, o.env, o.log);
   }
 
-  const secrets: DaemonSecrets = { adminToken: o.adminToken, llm: o.llm };
+  const secrets: DaemonSecrets = { adminToken: o.adminToken, llm: { ...o.llm, contextTokens: o.llm.contextTokens ?? 0, maxOutputTokens: o.llm.maxOutputTokens ?? 0, timeoutMs: o.llm.timeoutMs ?? 0 } };
   const child = spawn(o.nodePath, [o.serverPath, "--daemon", "--workspace", o.workspace, "--output-dir", o.outputDir, "--secrets-from-stdin"], {
     detached: true, // it must outlive this window: agents and other windows share it
     stdio: ["pipe", "ignore", "ignore"],

@@ -20,6 +20,11 @@ export interface AnthropicOptions {
 export class AnthropicProvider implements LlmProvider {
   readonly mode = "api-key" as const;
   readonly provider = "anthropic";
+  readonly limits = { contextTokens: null, maxOutputTokens: 8000 };
+  readonly free = false;
+  get endpoint() {
+    return this.opts.baseURL ?? "https://api.anthropic.com";
+  }
   private readonly client: Anthropic;
 
   private readonly opts: Omit<AnthropicOptions, "apiKey">;

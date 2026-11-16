@@ -13,6 +13,9 @@ import { LlmError, type LlmProvider, type LlmRequest, type LlmResponse } from ".
 export class SamplingProvider implements LlmProvider {
   readonly mode = "vscode-lm" as const;
   readonly provider = "vscode-lm";
+  readonly limits = { contextTokens: null, maxOutputTokens: 4000 };
+  readonly free = false;
+  readonly endpoint = null;
 
   constructor(private readonly server: Server, readonly model: string | null) {}
 

@@ -5,7 +5,7 @@ import * as path from "node:path";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import {
-  DAEMON_LOCK_FILE, DaemonInfo, ENV_LLM_API_KEY, ENV_LLM_BASE_URL, ENV_LLM_EFFORT, ENV_LLM_MODE, ENV_LLM_MODEL, HEALTH_PATH, MCP_PATH,
+  DAEMON_LOCK_FILE, DaemonInfo, ENV_LLM_API_KEY, ENV_LLM_BASE_URL, ENV_LLM_CONTEXT_TOKENS, ENV_LLM_EFFORT, ENV_LLM_MAX_OUTPUT_TOKENS, ENV_LLM_TIMEOUT_MS, ENV_LLM_MODE, ENV_LLM_MODEL, HEALTH_PATH, MCP_PATH,
   PROTOCOL_VERSION, daemonHealthy, ensureRuntimeDir, llmFingerprint, pidAlive, readDaemonInfo, removeDaemonInfo, writeDaemonInfo,
 } from "@app-brain/brain-protocol";
 import { SERVER_VERSION, createBrainCore } from "./server";
@@ -248,6 +248,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
       startedAt: new Date().toISOString(), workspace: opts.workspace.root, outputDir: opts.workspace.outputDir,
       llmFingerprint: llmFingerprint(agentToken, {
         mode: env[ENV_LLM_MODE] ?? "agent", model: env[ENV_LLM_MODEL] ?? "", baseUrl: env[ENV_LLM_BASE_URL] ?? "", effort: env[ENV_LLM_EFFORT] ?? "", apiKey: env[ENV_LLM_API_KEY] ?? "",
+        contextTokens: Number(env[ENV_LLM_CONTEXT_TOKENS]) || 0, maxOutputTokens: Number(env[ENV_LLM_MAX_OUTPUT_TOKENS]) || 0, timeoutMs: Number(env[ENV_LLM_TIMEOUT_MS]) || 0,
       }),
     };
     await writeDaemonInfo(dir, info); // published only once we are listening
