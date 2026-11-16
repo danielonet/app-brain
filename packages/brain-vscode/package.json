@@ -1,0 +1,65 @@
+{
+  "name": "brain-vscode",
+  "displayName": "App Brain",
+  "description": "Configure and watch the app-brain MCP server: knowledge base and docs generated from your code.",
+  "version": "0.0.0",
+  "private": true,
+  "publisher": "app-brain",
+  "license": "MIT",
+  "engines": { "vscode": "^1.101.0" },
+  "categories": ["Other", "AI"],
+  "main": "out/extension.js",
+  "activationEvents": ["onStartupFinished"],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "App Brain starts a local server that reads your code, so it only runs in trusted workspaces."
+    }
+  },
+  "contributes": {
+    "mcpServerDefinitionProviders": [
+      { "id": "brain.mcp", "label": "App Brain" }
+    ],
+    "commands": [
+      { "command": "brain.initialise", "title": "Brain: Initialise" },
+      { "command": "brain.start", "title": "Brain: Start Server" },
+      { "command": "brain.stop", "title": "Brain: Stop Server" },
+      { "command": "brain.reindex", "title": "Brain: Reindex Workspace" },
+      { "command": "brain.openOutputFolder", "title": "Brain: Open Output Folder" },
+      { "command": "brain.showLogs", "title": "Brain: Show Server Logs" },
+      { "command": "brain.copyMcpConfig", "title": "Brain: Copy MCP Config for Claude Code" }
+    ],
+    "configuration": {
+      "title": "App Brain",
+      "properties": {
+        "brain.server.path": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Path to the `brain-mcp` entry point (`cli.js`). Empty uses the bundled server."
+        },
+        "brain.server.nodePath": {
+          "type": "string",
+          "default": "node",
+          "markdownDescription": "Node.js executable used to run the server."
+        },
+        "brain.outputDir": {
+          "type": "string",
+          "default": ".brain",
+          "markdownDescription": "Output folder relative to the workspace root. Changing it needs a server restart and moving the existing folder."
+        },
+        "brain.registerWithCopilot": {
+          "type": "boolean",
+          "default": true,
+          "description": "Register the brain MCP server with VS Code so Copilot agent mode can use it."
+        }
+      }
+    }
+  },
+  "scripts": { "test": "node --test out/test/*.test.js" },
+  "dependencies": {
+    "@app-brain/brain-mcp": "0.0.0",
+    "@app-brain/brain-protocol": "0.0.0",
+    "@modelcontextprotocol/sdk": "^1.32.2"
+  },
+  "devDependencies": { "@types/vscode": "1.101.0" }
+}

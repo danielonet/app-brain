@@ -1,0 +1,21 @@
+{
+  "name": "@app-brain/brain-mcp",
+  "version": "0.0.0",
+  "description": "Local MCP server that builds and serves the brain for a code base",
+  "main": "out/index.js",
+  "bin": {
+    "brain-mcp": "out/cli.js"
+  },
+  "files": [
+    "out"
+  ],
+  "scripts": {
+    "test": "node --test out/test/*.test.js"
+  },
+  "dependencies": {
+    "@app-brain/brain-protocol": "0.0.0",
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "zod": "^3.25.76",
+    "zod-to-json-schema": "^3.25.2"
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "name": "@app-brain/brain-protocol",
+  "version": "0.0.0",
+  "description": "Shared types and schemas between brain-mcp and the VS Code extension",
+  "main": "out/index.js",
+  "types": "out/index.d.ts",
+  "files": ["out"],
+  "dependencies": { "zod": "^3.25.76" }
+}
