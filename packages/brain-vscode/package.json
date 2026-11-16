@@ -1,8 +1,8 @@
 {
-  "name": "brain-vscode",
+  "name": "app-brain",
   "displayName": "App Brain",
   "description": "Configure and watch the app-brain MCP server: knowledge base and docs generated from your code.",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "publisher": "danielonnet",
   "license": "MIT",

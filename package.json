@@ -1,5 +1,5 @@
 {
-  "name": "app-brain",
+  "name": "app-brain-workspace",
   "private": true,
   "version": "0.0.0",
   "description": "Generate application context (a knowledge base) out of a code base",
