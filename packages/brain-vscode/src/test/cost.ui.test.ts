@@ -8,6 +8,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport, getDefaultEnvironment } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { AdminTools, AgentTools, CostSummary, ENV_ADMIN_TOKEN, Resources } from "@app-brain/brain-protocol";
 import { costHtml } from "../costHtml";
+import { cleanDir } from "./cleanDir";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 let chromium: any;
@@ -75,8 +76,8 @@ describe("cost view, in a real browser", { skip: !chromium && "playwright is not
   after(async () => {
     await browser?.close();
     await mcp?.close();
-    rmSync(ws, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
-    rmSync(outDir, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
+    cleanDir(ws);
+    cleanDir(outDir);
   });
 
   async function open(data: CostSummary, opts: { width?: number; dark?: boolean } = {}) {

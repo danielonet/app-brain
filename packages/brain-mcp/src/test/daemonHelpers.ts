@@ -7,6 +7,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { AdminTools, DaemonInfo, Resources, readDaemonInfo, runtimeDir } from "@app-brain/brain-protocol";
 import { FILES } from "./helpers";
+import { cleanDir } from "./cleanDir";
 
 export const CLI = path.resolve(__dirname, "..", "cli.js");
 export const ADMIN = "adm-0123456789abcdef0123456789abcdef";
@@ -24,7 +25,7 @@ export function setup(extra: Record<string, string> = {}): Env {
   const runtime = mkdtempSync(path.join(tmpdir(), "brain-daemon-rt-"));
   const env: NodeJS.ProcessEnv = { ...process.env, BRAIN_RUNTIME_DIR: runtime };
   for (const k of Object.keys(env)) if (k.startsWith("BRAIN_LLM_") || k === "BRAIN_ADMIN_TOKEN") delete env[k];
-  return { ws, runtime, env, cleanup: () => { rmSync(ws, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 }); rmSync(runtime, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 }); } };
+  return { ws, runtime, env, cleanup: () => { cleanDir(ws); cleanDir(runtime); } };
 }
 
 export interface Proc { child: ChildProcess; info: DaemonInfo; stderr: () => string; exit: Promise<number | null>; kill(sig?: NodeJS.Signals): void }

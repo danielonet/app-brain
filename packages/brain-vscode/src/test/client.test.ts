@@ -6,6 +6,7 @@ import { after, before, describe, it } from "node:test";
 import type { BrainStatus } from "@app-brain/brain-protocol";
 import { BrainClient } from "../client";
 import type { ConnState } from "../format";
+import { cleanDir } from "./cleanDir";
 
 describe("BrainClient against the real brain-mcp", () => {
   let ws: string;
@@ -15,7 +16,7 @@ describe("BrainClient against the real brain-mcp", () => {
     writeFileSync(path.join(ws, "src/a.ts"), "/** Adds numbers. */\nexport function addNumbers(a: number, b: number) { return a + b; }\n");
     writeFileSync(path.join(ws, "src/b.py"), "b = 2\n");
   });
-  after(() => rmSync(ws, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 }));
+  after(() => cleanDir(ws));
 
   const make = (events: { conn: ConnState; status: BrainStatus | null }[], serverPath?: string) =>
     new BrainClient({

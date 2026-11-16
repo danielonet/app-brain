@@ -8,6 +8,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { ResourceUpdatedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
 import { AdminTools, AgentTools, ENV_ADMIN_TOKEN, Resources, UsageSummary } from "@app-brain/brain-protocol";
+import { cleanDir } from "./cleanDir";
 
 const TOKEN = "t";
 const CLI = path.resolve(__dirname, "..", "cli.js");
@@ -93,7 +94,7 @@ describe("agent tools over a real index", () => {
   });
   after(async () => {
     await c.close();
-    rmSync(ws, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
+    cleanDir(ws);
   });
 
   it("indexes without any admin token or init, and writes nothing into the workspace", async () => {
@@ -210,7 +211,7 @@ describe("agent tools over a real index", () => {
 describe("usage log excludes the extension's own client", () => {
   let ws: string;
   before(() => { ws = fixture(); });
-  after(() => rmSync(ws, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 }));
+  after(() => cleanDir(ws));
 
   it("does not count brain-vscode calls", async () => {
     const c = await connect(ws, { clientName: "brain-vscode", admin: true, watch: false });
@@ -236,7 +237,7 @@ describe("usage log excludes the extension's own client", () => {
 describe("incremental indexing and persistence", () => {
   let ws: string;
   before(() => { ws = fixture(); });
-  after(() => rmSync(ws, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 }));
+  after(() => cleanDir(ws));
 
   it("reparses only changed files, drops deleted ones, and survives a restart after init", async () => {
     const c = await connect(ws, { admin: true, watch: false });

@@ -7,6 +7,7 @@ import { after, before, describe, it } from "node:test";
 import type { Graph } from "@app-brain/brain-protocol";
 import { BrainClient } from "../client";
 import { graphHtml } from "../graphHtml";
+import { cleanDir } from "./cleanDir";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 let chromium: any;
@@ -60,8 +61,8 @@ describe("dependency graph webview, in a real browser, with real graph data", { 
   after(async () => {
     await browser?.close();
     await client?.stop();
-    rmSync(ws, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
-    rmSync(outDir, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
+    cleanDir(ws);
+    cleanDir(outDir);
   });
 
   async function open(graph: Graph, size = { width: 1200, height: 800 }) {

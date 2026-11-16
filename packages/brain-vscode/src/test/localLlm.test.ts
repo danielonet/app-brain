@@ -9,6 +9,7 @@ import { LOCAL_DEFAULT_CONTEXT_TOKENS, LOCAL_DEFAULT_MAX_OUTPUT_TOKENS, LOCAL_PR
 import { ensureDaemon } from "../daemonManager";
 import { llmTestSummary } from "../format";
 import { daemonLlm, llmEnv, localBaseUrl, localProblems } from "../llmEnv";
+import { cleanDir } from "./cleanDir";
 
 const manifest = JSON.parse(readFileSync(path.resolve(__dirname, "..", "..", "package.json"), "utf8"));
 const props = manifest.contributes.configuration.properties;
@@ -88,7 +89,7 @@ describe("the settings offered", () => {
 
 describe("handing local settings to the shared server", () => {
   const spaces: { ws: string; rt: string; pid?: number }[] = [];
-  after(() => { for (const s of spaces) { if (s.pid) try { process.kill(s.pid, "SIGKILL"); } catch { /* gone */ } rmSync(s.ws, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 }); rmSync(s.rt, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 }); } });
+  after(() => { for (const s of spaces) { if (s.pid) try { process.kill(s.pid, "SIGKILL"); } catch { /* gone */ } cleanDir(s.ws); cleanDir(s.rt); } });
 
   it("fingerprints the window, so changing it replaces the daemon, and the two sides always agree", async () => {
     const ws = mkdtempSync(path.join(tmpdir(), "brain-local-ws-"));

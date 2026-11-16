@@ -5,6 +5,7 @@ import * as path from "node:path";
 import { after, before, describe, it } from "node:test";
 import { BrainClient, ToolError } from "../client";
 import { settingsHtml } from "../settingsHtml";
+import { cleanDir } from "./cleanDir";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 let chromium: any;
@@ -48,8 +49,8 @@ describe("settings webview, in a real browser, against the real server", { skip:
   after(async () => {
     await browser?.close();
     await client?.stop();
-    rmSync(ws, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
-    rmSync(outDir, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
+    cleanDir(ws);
+    cleanDir(outDir);
   });
 
   /** Opens a fresh page, with a stub for VS Code's webview API that records posted messages. */

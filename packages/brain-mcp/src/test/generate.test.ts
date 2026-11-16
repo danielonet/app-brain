@@ -8,6 +8,7 @@ import { AdminTools, AgentTools, Resources } from "@app-brain/brain-protocol";
 import { parseConcept } from "../okf/format";
 import { Recorded, anthropicError, anthropicOk, docFor, openAiOk, startFakeLlm, systemText, userText, Handler } from "./fakeLlm";
 import { SamplingHandler, connect, fixture, readJson, ready, tool } from "./helpers";
+import { cleanDir } from "./cleanDir";
 
 const KEY = "sk-ant-api03-THISISTHETESTKEY0123456789";
 const PRICING = { "test-model": { inputPerMtok: 3, outputPerMtok: 15 } };
@@ -49,7 +50,7 @@ async function scenario(o: { handler?: Handler; extraFiles?: Record<string, stri
       }
       throw new Error("job did not finish: " + JSON.stringify(await readJson(admin, Resources.generation)).slice(0, 400));
     },
-    async close() { await admin.close(); await fake.close(); rmSync(ws, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 }); },
+    async close() { await admin.close(); await fake.close(); cleanDir(ws); },
   };
   if (o.priced !== false) await s.configure({});
   return s;
@@ -77,7 +78,7 @@ describe("server-side doc generation", () => {
       assert.equal(est.canStart, false);
       assert.match(est.blocked, /Server-side generation is off/);
       assert.equal((await tool(c, AdminTools.generateDocs, { confirm: true })).isError, true);
-    } finally { await c.close(); rmSync(ws, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 }); }
+    } finally { await c.close(); cleanDir(ws); }
   });
 
   it("explains a missing key, and never echoes one", async () => {
@@ -89,7 +90,7 @@ describe("server-side doc generation", () => {
       assert.equal(st.llm.ready, false);
       assert.match(st.llm.problem, /Set LLM API Key/);
       assert.equal(st.llm.model, "claude-opus-5-5", "the default model");
-    } finally { await c.close(); rmSync(ws, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 }); }
+    } finally { await c.close(); cleanDir(ws); }
   });
 
   it("estimates before spending: nothing is called, numbers are labelled estimates, and the plan is bottom-up", async () => {
@@ -556,7 +557,7 @@ describe("server-side doc generation", () => {
       assert.equal(st.llm.ready, false);
       assert.match(st.llm.problem, /cannot run prompts/);
       assert.equal((await tool(c, AdminTools.generateDocs, { confirm: true })).isError, true);
-    } finally { await c.close(); rmSync(ws, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 }); }
+    } finally { await c.close(); cleanDir(ws); }
   });
 
   it("recovers when the model's answer is empty or unusable", async () => {
