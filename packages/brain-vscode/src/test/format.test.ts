@@ -1,11 +1,11 @@
 import { strict as assert } from "node:assert";
 import { describe, it } from "node:test";
 import type { BrainStatus } from "@app-brain/brain-protocol";
-import { activityItems, describeArgs, flashText, mcpConfigSnippet, statusBarText } from "../format";
+import { activityItems, describeArgs, flashText, mcpConfigSnippet, reviewRows, statusBarText, validationReport, validationSummary } from "../format";
 
 const base: BrainStatus = {
   state: "idle", initialised: true, workspace: "/w", outputDir: "/w/.brain", serverVersion: "0.0.0",
-  protocolVersion: "0.1", startedAt: "", index: { files: 3, symbols: 12, edges: 4, byLanguage: { typescript: 2, python: 1 }, lastIndexedAt: null }, message: null,
+  protocolVersion: "0.2", startedAt: "", knowledge: { reviewed: 2, drafts: 0, stale: 1 }, index: { files: 3, symbols: 12, edges: 4, byLanguage: { typescript: 2, python: 1 }, lastIndexedAt: null }, message: null,
 };
 
 describe("statusBarText", () => {
@@ -14,6 +14,12 @@ describe("statusBarText", () => {
     assert.equal(v.text, "$(book) Brain: ready · 3 files · 12 symbols");
     assert.match(v.tooltip, /4 import links/);
     assert.match(v.tooltip, /typescript: 2, python: 1/);
+  });
+  it("shows how many docs await review, and the doc counts in the tooltip", () => {
+    const v = statusBarText("connected", { ...base, knowledge: { reviewed: 2, drafts: 3, stale: 1 } });
+    assert.match(v.text, / · 3 to review$/);
+    assert.match(v.tooltip, /2 reviewed, 3 awaiting review, 1 stale/);
+    assert.ok(!statusBarText("connected", base).text.includes("to review"));
   });
   it("singular", () => assert.match(statusBarText("connected", { ...base, index: { ...base.index, files: 1, symbols: 1 } }).text, /1 file · 1 symbol$/));
   it("not initialised", () => assert.match(statusBarText("connected", { ...base, initialised: false }).text, /not initialised/));
@@ -63,5 +69,36 @@ describe("agent activity", () => {
     assert.equal(items[1].label, 'search_code "user by id"');
     assert.equal(items[1].description, "copilot · 12 ms · ~340 tok");
     assert.ok(items[1].error && !items[2].error);
+  });
+});
+
+describe("review queue and validation", () => {
+  const item = (over = {}) => ({
+    target: "src/a.ts", kind: "file" as const, conceptPath: "files/src/a.ts.md", draftFile: ".brain/drafts/files/src/a.ts.md",
+    description: "Does a.", generatedBy: "claude-code/m1", generatedAt: "2026-11-16T10:00:00Z", model: "m1", stale: false, replacesReviewed: false, ...over,
+  });
+  it("describes drafts and flags stale ones and replacements", () => {
+    const [a, b] = reviewRows([item(), item({ target: "src/b.ts", stale: true, replacesReviewed: true, model: null })]);
+    assert.equal(a.label, "src/a.ts");
+    assert.equal(a.description, "file · m1");
+    assert.ok(!a.stale);
+    assert.equal(b.description, "file · claude-code/m1 · code changed since · replaces reviewed doc");
+    assert.ok(b.stale);
+    assert.match(b.tooltip, /code changed after this draft/);
+    assert.deepEqual(reviewRows([]), []);
+  });
+  it("reports errors first", () => {
+    const r = { conformant: false, concepts: 3, issues: [
+      { severity: "info" as const, code: "orphan" as const, file: "z.md", message: "No inbound." },
+      { severity: "error" as const, code: "missing-type" as const, file: "a.md", message: "No type." },
+      { severity: "warning" as const, code: "cycle" as const, file: "m.md", message: "Loop." },
+    ] };
+    const lines = validationReport(r);
+    assert.equal(lines[0], "Knowledge bundle: 3 concepts, NOT conformant OKF");
+    assert.match(lines[1], /^ {2}ERROR {3}a\.md: No type\./);
+    assert.match(lines[2], /WARNING m\.md/);
+    assert.match(lines[3], /INFO {4}z\.md/);
+    assert.equal(validationSummary(r), "Not conformant: 1 errors, 1 warnings, 1 notes");
+    assert.deepEqual(validationReport({ conformant: true, concepts: 1, issues: [] }), ["Knowledge bundle: 1 concept, conformant OKF", "  No issues."]);
   });
 });

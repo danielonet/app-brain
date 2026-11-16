@@ -17,6 +17,8 @@ export const Resources = {
   status: "brain://status",
   config: "brain://config",
   usage: "brain://usage",
+  pendingReview: "brain://knowledge/pending-review",
+  coverage: "brain://coverage",
 } as const;
 
 /** Read-only tools for agents. Available to every client, no admin token. */
@@ -25,6 +27,8 @@ export const AgentTools = {
   getSymbol: "get_symbol",
   getNeighbors: "get_neighbors",
   impactOfChange: "impact_of_change",
+  listUndocumented: "list_undocumented",
+  saveSummary: "save_summary",
 } as const;
 
 export const SYMBOL_KINDS = ["function", "class", "method", "interface", "type", "enum", "variable"] as const;
@@ -37,6 +41,8 @@ export const AdminTools = {
   getConfigSchema: "brain_admin_get_config_schema",
   setConfig: "brain_admin_set_config",
   reindex: "brain_admin_reindex",
+  reviewSummary: "brain_admin_review_summary",
+  validate: "brain_admin_validate",
 } as const;
 
 export const ENV_ADMIN_TOKEN = "BRAIN_ADMIN_TOKEN";
@@ -103,6 +109,11 @@ export const StatusSchema = z.object({
     byLanguage: z.record(z.number().int().nonnegative()),
     lastIndexedAt: z.string().nullable(),
   }),
+  knowledge: z.object({
+    reviewed: z.number().int().nonnegative(),
+    drafts: z.number().int().nonnegative(),
+    stale: z.number().int().nonnegative(),
+  }),
   message: z.string().nullable(),
 });
 
@@ -166,3 +177,53 @@ export const UsageSummarySchema = z.object({
   recent: z.array(UsageEntrySchema),
 });
 export type UsageSummary = z.infer<typeof UsageSummarySchema>;
+
+// ---------------------------------------------------------------------------
+// Knowledge bundle (OKF) and review: PLAN-VSCODE-EXTENSION.md §5
+// ---------------------------------------------------------------------------
+
+export const DOC_KINDS = ["file", "module"] as const;
+export type DocKind = (typeof DOC_KINDS)[number];
+
+/** A generated concept waiting in `drafts/` for a human decision. */
+export const PendingItemSchema = z.object({
+  target: z.string().describe("Repo-relative file or directory the doc describes."),
+  kind: z.enum(DOC_KINDS),
+  conceptPath: z.string().describe("Path of the concept inside the bundle, e.g. files/src/a.ts.md"),
+  draftFile: z.string().describe("Workspace-relative path of the draft file."),
+  description: z.string(),
+  generatedBy: z.string(),
+  generatedAt: z.string(),
+  model: z.string().nullable(),
+  stale: z.boolean().describe("The code changed after this draft was written."),
+  replacesReviewed: z.boolean().describe("A reviewed doc for this target already exists."),
+});
+export type PendingItem = z.infer<typeof PendingItemSchema>;
+
+export const CoverageSchema = z.object({
+  files: z.object({ total: z.number().int(), reviewed: z.number().int(), drafts: z.number().int(), stale: z.number().int() }),
+  modules: z.object({ total: z.number().int(), reviewed: z.number().int(), drafts: z.number().int(), stale: z.number().int() }),
+});
+export type Coverage = z.infer<typeof CoverageSchema>;
+
+export const ValidationIssueSchema = z.object({
+  severity: z.enum(["error", "warning", "info"]),
+  code: z.enum(["no-frontmatter", "bad-frontmatter", "missing-type", "index-frontmatter", "broken-link", "orphan", "cycle", "depends-on-missing"]),
+  file: z.string().describe("Path inside the knowledge bundle."),
+  message: z.string(),
+});
+export type ValidationIssue = z.infer<typeof ValidationIssueSchema>;
+
+export const ValidationResultSchema = z.object({
+  conformant: z.boolean().describe("No errors: every concept parses and has a type (OKF §10)."),
+  concepts: z.number().int(),
+  issues: z.array(ValidationIssueSchema),
+});
+export type ValidationResult = z.infer<typeof ValidationResultSchema>;
+
+export const ReviewResultSchema = z.object({
+  action: z.enum(["approve", "reject"]),
+  target: z.string(),
+  conceptPath: z.string(),
+});
+export type ReviewResult = z.infer<typeof ReviewResultSchema>;

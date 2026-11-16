@@ -1,5 +1,6 @@
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
+import { renderIndex } from "./okf/format";
 import {
   BrainConfig,
   ConfigError,
@@ -96,7 +97,7 @@ export class BrainWorkspace {
     // OKF bundle root. Only the root index.md may carry front matter (OKF §7).
     await write(
       this.abs("knowledge", "index.md"),
-      `---\nokf_version: "${OKF_VERSION}"\n---\n\n# Knowledge\n\nReviewed knowledge about this code base, as an [Open Knowledge Format](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md) bundle. Maintained by brain-mcp.\n`,
+      renderIndex("Knowledge", [], { okf_version: OKF_VERSION }),
     );
     const day = now.toISOString().slice(0, 10);
     await write(this.abs("knowledge", "log.md"), `# Log\n\n## ${day}\n\n- **Creation**: knowledge bundle initialised.\n`);

@@ -50,6 +50,17 @@ describe("BrainClient against the real brain-mcp", () => {
     assert.equal(hits[0].path, "src/a.ts");
     assert.equal(hits[0].lines, "2-2");
 
+    // Documentation review round trip: the extension only sees and decides, never writes.
+    const draftsSeen: string[][] = [];
+    const reviewer = new BrainClient({
+      nodePath: process.execPath, serverPath: require.resolve("@app-brain/brain-mcp/out/cli.js"), workspace: ws, outputDir: ".brain",
+      log: () => {}, onState: () => {}, onPending: (items) => draftsSeen.push(items.map((i) => i.target)),
+    });
+    await reviewer.start();
+    assert.deepEqual(draftsSeen.at(-1), []);
+    assert.equal((await reviewer.validate()).conformant, true);
+    await reviewer.stop();
+
     await c.stop();
     assert.equal(events.at(-1)?.conn, "disconnected");
   });

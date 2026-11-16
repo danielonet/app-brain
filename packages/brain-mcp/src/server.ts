@@ -7,6 +7,7 @@ import {
   AdminTools,
   AgentTools,
   BrainStatus,
+  DOC_KINDS,
   ConfigSchema,
   HelloResult,
   PROTOCOL_VERSION,
@@ -15,6 +16,7 @@ import {
   SYMBOL_KINDS,
 } from "@app-brain/brain-protocol";
 import { Indexer } from "./indexer";
+import { Knowledge } from "./okf/knowledge";
 import { BrainStore, type SymbolHit } from "./store";
 import { watchWorkspace } from "./watcher";
 import { BrainWorkspace } from "./workspace";
@@ -81,6 +83,17 @@ export function createBrainServer(opts: BrainServerOptions) {
   let initialisedAtStart = false;
   const indexer = new Indexer(ws, store, { onProgress: (m) => setState({ message: m }) });
 
+  const knowledge = new Knowledge(
+    ws,
+    () => store,
+    () => {
+      notify(Resources.pendingReview);
+      notify(Resources.coverage);
+      notify(Resources.status);
+    },
+    () => state.state === "idle",
+  );
+
   const state = { state: "starting" as BrainStatus["state"], message: null as string | null };
   let lastNotify = 0;
 
@@ -95,6 +108,7 @@ export function createBrainServer(opts: BrainServerOptions) {
       protocolVersion: PROTOCOL_VERSION,
       startedAt,
       index: { files: c.files, symbols: c.symbols, edges: c.edges, byLanguage: c.byLanguage, lastIndexedAt: c.lastIndexedAt },
+      knowledge: await knowledge.counts(),
       message: state.message,
     };
   }
@@ -129,16 +143,18 @@ export function createBrainServer(opts: BrainServerOptions) {
 
   resource("status", Resources.status, "Brain status", "Server state, initialisation and index counters.", status);
   resource("config", Resources.config, "Brain config", "Team config (.brain/config.json), or defaults when not initialised.", () => ws.readConfig());
+  resource("pending-review", Resources.pendingReview, "Pending review", "Generated docs in drafts/ waiting for a human to approve or reject them.", () => knowledge.pending());
+  resource("coverage", Resources.coverage, "Documentation coverage", "How many files and modules have reviewed, draft or stale docs.", () => knowledge.coverage());
   resource("usage", Resources.usage, "Agent usage", "Recent calls agents made to the brain tools, with totals by client and tool.", () => store.usageSummary());
 
   // ---- agent tools: read-only, no admin token ---------------------------------
   /** Registers a read-only tool and records every call in the usage log (§4.4 level 1). */
-  function agentTool<S extends z.ZodRawShape>(name: string, description: string, shape: S, handler: (args: z.infer<z.ZodObject<S>>) => unknown) {
+  function agentTool<S extends z.ZodRawShape>(name: string, description: string, shape: S, handler: (args: z.infer<z.ZodObject<S>>) => unknown | Promise<unknown>) {
     server.registerTool(name, { description, inputSchema: shape, annotations: { readOnlyHint: true } }, (async (args: z.infer<z.ZodObject<S>>) => {
       const t0 = performance.now();
       let result: ReturnType<typeof compact> | ReturnType<typeof fail>;
       try {
-        result = compact(handler(args));
+        result = compact(await handler(args));
       } catch (e) {
         result = fail((e as Error).message);
       }
@@ -257,6 +273,42 @@ export function createBrainServer(opts: BrainServerOptions) {
     },
   );
 
+  agentTool(
+    AgentTools.listUndocumented,
+    "Files (or modules) that have no reviewed documentation, most important first (ranked by how many files import them). Read the code, then call save_summary for each one you document. Stale means the code changed since the doc was written.",
+    {
+      kind: z.enum(DOC_KINDS).default("file"),
+      limit: z.number().int().min(1).max(50).default(10),
+      offset: z.number().int().min(0).default(0),
+    },
+    async ({ kind, limit, offset }) => ({ ...(await knowledge.listUndocumented({ kind, limit, offset })), ...notReady() }),
+  );
+
+  agentTool(
+    AgentTools.saveSummary,
+    "Save documentation you wrote for a file or module. It is stored as an unreviewed draft in .brain/drafts/ and only joins the knowledge base after a person approves it in VS Code. Write for another engineer: purpose, key behaviours, gotchas, how it fits. Do not paste code. You must say which model wrote it.",
+    {
+      target: z.string().min(1).describe("Repo-relative path of the file or directory, as returned by list_undocumented."),
+      kind: z.enum(DOC_KINDS).optional().describe("Only needed if the path is ambiguous."),
+      description: z.string().min(1).describe("One sentence: what this is for."),
+      summary: z.string().min(1).describe("The documentation, in Markdown (no front matter)."),
+      model: z.string().min(1).describe("Id of the model that wrote this summary."),
+      tokens_in: z.number().int().min(0).optional().describe("Input tokens you used, if you know them. Makes the cost report exact."),
+      tokens_out: z.number().int().min(0).optional().describe("Output tokens of the summary, if you know them."),
+      tags: z.array(z.string()).max(10).optional(),
+    },
+    async ({ target, kind, description, summary, model, tokens_in, tokens_out, tags }) => {
+      if (!(await ws.isInitialised())) {
+        throw new Error("This workspace is not initialised. Ask the user to run “Brain: Initialise” in VS Code; that creates the .brain folder drafts are saved to.");
+      }
+      const saved = await knowledge.saveSummary({
+        target, kind, description, summary, model, tokensIn: tokens_in, tokensOut: tokens_out, tags,
+        client: server.server.getClientVersion()?.name ?? "agent",
+      });
+      return { saved: true, status: "draft", draft: saved.draft, note: "Saved as an unreviewed draft. It appears in the knowledge base once a person approves it in VS Code." };
+    },
+  );
+
   // ---- admin tools: refused until brain_admin_hello succeeds with the token ---
   const guarded = <A, R>(fn: (args: A) => Promise<R>) => async (args: A) =>
     admin ? fn(args) : fail("Admin tools require brain_admin_hello with a valid admin token.");
@@ -286,13 +338,15 @@ export function createBrainServer(opts: BrainServerOptions) {
   /** After `init`, move the index from memory to .brain/.cache/brain.db so it survives restarts. */
   async function persistIndex() {
     if (store.location !== ":memory:") return;
-    const next = BrainStore.open(diskPath);
-    await indexer.swapStore(next);
     const old = store;
-    store = next;
+    // Copy, don't rebuild: the index is complete now, and docs can be saved straight away.
+    store = await indexer.swapStore((current) => {
+      current.persistTo(diskPath);
+      return BrainStore.open(diskPath);
+    });
     old.close();
-    next.pruneUsage(USAGE_RETENTION_DAYS);
-    void reindex().catch(() => {});
+    store.pruneUsage(USAGE_RETENTION_DAYS);
+    void reindex().catch(() => {}); // picks up edits made while this ran; cheap when nothing changed
   }
 
   server.registerTool(
@@ -347,6 +401,33 @@ export function createBrainServer(opts: BrainServerOptions) {
     guarded(async () => json(await reindex())),
   );
 
+  server.registerTool(
+    AdminTools.reviewSummary,
+    {
+      description: "Approve or reject a generated draft. Approving moves it into the knowledge bundle with status stable and a human verification; an edited body may be supplied.",
+      inputSchema: {
+        target: z.string().min(1),
+        action: z.enum(["approve", "reject"]),
+        by: z.string().min(1).describe("Who is deciding; recorded as human:<by>."),
+        note: z.string().optional(),
+        body: z.string().optional().describe("Replacement body (an edit by the reviewer)."),
+      },
+    },
+    guarded(async (a: { target: string; action: "approve" | "reject"; by: string; note?: string; body?: string }) => {
+      try {
+        return json(await knowledge.review(a));
+      } catch (e) {
+        return fail((e as Error).message);
+      }
+    }),
+  );
+
+  server.registerTool(
+    AdminTools.validate,
+    { description: "Check the knowledge bundle: OKF conformance (every concept has a type) and graph health (broken links, orphans, dependency cycles)." },
+    guarded(async () => json(await knowledge.validate())),
+  );
+
   let watcher: { close(): void } | null = null;
   return {
     server,
@@ -356,10 +437,9 @@ export function createBrainServer(opts: BrainServerOptions) {
     async start() {
       initialisedAtStart = await ws.isInitialised();
       if (initialisedAtStart) {
-        const disk = BrainStore.open(diskPath);
-        await indexer.swapStore(disk);
-        store.close();
-        store = disk;
+        const old = store;
+        store = await indexer.swapStore(() => BrainStore.open(diskPath));
+        old.close();
         store.pruneUsage(USAGE_RETENTION_DAYS);
       }
       void reindex().catch(() => {});

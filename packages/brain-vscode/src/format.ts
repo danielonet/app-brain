@@ -1,4 +1,4 @@
-import type { BrainStatus, UsageEntry, UsageSummary } from "@app-brain/brain-protocol";
+import type { BrainStatus, PendingItem, UsageEntry, UsageSummary, ValidationResult } from "@app-brain/brain-protocol";
 
 /** Pure formatting, kept free of the `vscode` module so it can be unit-tested. */
 export type ConnState = "disconnected" | "connecting" | "connected" | "failed";
@@ -28,9 +28,14 @@ export function statusBarText(conn: ConnState, status: BrainStatus | null): { te
     .sort((a, b) => b[1] - a[1])
     .map(([l, c]) => `${l}: ${c}`)
     .join(", ");
+  const k = status.knowledge;
+  const review = k.drafts > 0 ? ` · ${k.drafts} to review` : "";
   return {
-    text: `$(book) Brain: ready · ${n} file${n === 1 ? "" : "s"} · ${sym} symbol${sym === 1 ? "" : "s"}`,
-    tooltip: `Brain ${status.serverVersion}\n${sym} symbols, ${status.index.edges} import links\nOutput: ${status.outputDir}${langs ? `\n${langs}` : ""}`,
+    text: `$(book) Brain: ready · ${n} file${n === 1 ? "" : "s"} · ${sym} symbol${sym === 1 ? "" : "s"}${review}`,
+    tooltip:
+      `Brain ${status.serverVersion}\n${sym} symbols, ${status.index.edges} import links\n` +
+      `Docs: ${k.reviewed} reviewed, ${k.drafts} awaiting review, ${k.stale} stale\n` +
+      `Output: ${status.outputDir}${langs ? `\n${langs}` : ""}`,
     error: false,
   };
 }
@@ -92,4 +97,45 @@ export function activityItems(u: UsageSummary | null): ActivityItem[] {
     });
   }
   return items;
+}
+
+// ---------------------------------------------------------------------------
+// Review queue and validation
+// ---------------------------------------------------------------------------
+
+export interface ReviewRow {
+  target: string;
+  label: string;
+  description: string;
+  tooltip: string;
+  stale: boolean;
+}
+
+/** Rows for the Review Queue view. The server sorts newest first. */
+export function reviewRows(items: PendingItem[]): ReviewRow[] {
+  return items.map((i) => {
+    const flags = [i.stale ? "code changed since" : "", i.replacesReviewed ? "replaces reviewed doc" : ""].filter(Boolean);
+    return {
+      target: i.target,
+      label: i.target,
+      description: [i.kind, i.model ?? i.generatedBy, ...flags].join(" · "),
+      tooltip: `${i.description}\n\nWritten by ${i.generatedBy}${i.generatedAt ? ` at ${i.generatedAt}` : ""}\n${i.draftFile}${i.stale ? "\n\nThe code changed after this draft was written." : ""}`,
+      stale: i.stale,
+    };
+  });
+}
+
+/** Plain-text report for the output channel, errors first. */
+export function validationReport(r: ValidationResult): string[] {
+  const order = { error: 0, warning: 1, info: 2 } as const;
+  const lines = [`Knowledge bundle: ${r.concepts} concept${r.concepts === 1 ? "" : "s"}, ${r.conformant ? "conformant OKF" : "NOT conformant OKF"}`];
+  const sorted = [...r.issues].sort((a, b) => order[a.severity] - order[b.severity] || a.file.localeCompare(b.file));
+  for (const i of sorted) lines.push(`  ${i.severity.toUpperCase().padEnd(7)} ${i.file}: ${i.message}`);
+  if (r.issues.length === 0) lines.push("  No issues.");
+  return lines;
+}
+
+export function validationSummary(r: ValidationResult): string {
+  const n = (s: string) => r.issues.filter((i) => i.severity === s).length;
+  return `${r.conformant ? "Conformant" : "Not conformant"}: ${n("error")} errors, ${n("warning")} warnings, ${n("info")} notes`;
 }

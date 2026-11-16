@@ -9,6 +9,9 @@ import {
   HelloResult,
   InitResult,
   PROTOCOL_VERSION,
+  PendingItem,
+  ReviewResult,
+  ValidationResult,
   ReindexResult,
   Resources,
   UsageSummary,
@@ -23,6 +26,7 @@ export interface BrainClientOptions {
   log: (line: string) => void;
   onState: (state: ConnState, status: BrainStatus | null) => void;
   onUsage?: (usage: UsageSummary) => void;
+  onPending?: (items: PendingItem[]) => void;
 }
 
 export interface SearchHit {
@@ -68,6 +72,7 @@ export class BrainClient {
       client.setNotificationHandler(ResourceUpdatedNotificationSchema, (n) => {
         if (n.params.uri === Resources.status) void this.refresh();
         else if (n.params.uri === Resources.usage) void this.refreshUsage();
+        else if (n.params.uri === Resources.pendingReview) void this.refreshPending();
       });
       await client.connect(transport);
       this.client = client;
@@ -80,9 +85,11 @@ export class BrainClient {
       if (!hello.admin) throw new Error("Server refused the admin handshake.");
       await client.subscribeResource({ uri: Resources.status });
       await client.subscribeResource({ uri: Resources.usage });
+      await client.subscribeResource({ uri: Resources.pendingReview });
       this.restarts = 0;
       await this.refresh();
       await this.refreshUsage();
+      await this.refreshPending();
     } catch (e) {
       this.opts.log(`start failed: ${(e as Error).message}`);
       await this.teardown();
@@ -133,6 +140,20 @@ export class BrainClient {
     if (!this.client || !this.opts.onUsage) return;
     const res = await this.client.readResource({ uri: Resources.usage });
     this.opts.onUsage(JSON.parse((res.contents[0] as { text: string }).text) as UsageSummary);
+  }
+
+  async refreshPending(): Promise<void> {
+    if (!this.client || !this.opts.onPending) return;
+    const res = await this.client.readResource({ uri: Resources.pendingReview });
+    this.opts.onPending(JSON.parse((res.contents[0] as { text: string }).text) as PendingItem[]);
+  }
+
+  review(target: string, action: "approve" | "reject", by: string, note?: string): Promise<ReviewResult> {
+    return this.call<ReviewResult>(AdminTools.reviewSummary, { target, action, by, ...(note ? { note } : {}) });
+  }
+
+  validate(): Promise<ValidationResult> {
+    return this.call<ValidationResult>(AdminTools.validate);
   }
 
   /** Symbol search for the quick pick. Calls made as "brain-vscode" are not counted as agent usage. */

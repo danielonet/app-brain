@@ -1,8 +1,10 @@
+import { execFile } from "node:child_process";
+import * as os from "node:os";
 import * as path from "node:path";
 import * as vscode from "vscode";
-import type { BrainStatus, UsageSummary } from "@app-brain/brain-protocol";
+import type { BrainStatus, PendingItem, UsageSummary } from "@app-brain/brain-protocol";
 import { BrainClient } from "./client";
-import { ActivityItem, ConnState, activityItems, flashText, mcpConfigSnippet, statusBarText } from "./format";
+import { ActivityItem, ConnState, ReviewRow, activityItems, flashText, mcpConfigSnippet, reviewRows, statusBarText, validationReport, validationSummary } from "./format";
 
 let client: BrainClient | undefined;
 
@@ -61,6 +63,16 @@ export async function activate(context: vscode.ExtensionContext) {
     lastSeenCall = newest.id;
   };
 
+  const review = new ReviewProvider();
+  let pending: PendingItem[] = [];
+  const reviewView = vscode.window.createTreeView("brain.review", { treeDataProvider: review });
+  context.subscriptions.push(reviewView);
+  const onPending = (items: PendingItem[]) => {
+    pending = items;
+    review.update(items);
+    reviewView.badge = items.length ? { value: items.length, tooltip: `${items.length} generated doc${items.length === 1 ? "" : "s"} to review` } : undefined;
+  };
+
   let lastConn: ConnState = "connecting";
   let promptedInit = false;
   const onState = (conn: ConnState, status: BrainStatus | null) => {
@@ -87,6 +99,7 @@ export async function activate(context: vscode.ExtensionContext) {
       log: (l) => out.appendLine(l),
       onState,
       onUsage,
+      onPending,
     });
 
   const run = async (label: string, fn: () => Promise<unknown>) => {
@@ -124,6 +137,43 @@ export async function activate(context: vscode.ExtensionContext) {
         void vscode.window.setStatusBarMessage(`Brain: indexed ${r.files} files in ${r.durationMs} ms`, 4000);
       }),
     ),
+    vscode.commands.registerCommand("brain.review.open", async (row: ReviewRow) => {
+      const item = pending.find((p) => p.target === row?.target);
+      if (!item) return;
+      await vscode.window.showTextDocument(vscode.Uri.file(path.join(folder.uri.fsPath, item.draftFile)));
+    }),
+    vscode.commands.registerCommand("brain.review.approve", (row: ReviewRow) =>
+      run("approve", async () => {
+        const item = pending.find((p) => p.target === row?.target);
+        if (!item) return;
+        if (item.stale) {
+          const ok = await vscode.window.showWarningMessage(`The code in ${item.target} changed after this doc was written. Approve anyway?`, { modal: true }, "Approve anyway");
+          if (ok !== "Approve anyway") return;
+        }
+        // Save edits made to the draft in the editor first: the server approves what is on disk.
+        await vscode.workspace.saveAll(false);
+        await client!.review(item.target, "approve", await reviewer(folder.uri.fsPath));
+        await client!.refresh();
+      }),
+    ),
+    vscode.commands.registerCommand("brain.review.reject", (row: ReviewRow) =>
+      run("reject", async () => {
+        const item = pending.find((p) => p.target === row?.target);
+        if (!item) return;
+        const note = await vscode.window.showInputBox({ prompt: `Why reject the doc for ${item.target}? (optional; the next attempt can use it)`, placeHolder: "Too vague, missed the retry logic…" });
+        if (note === undefined) return; // cancelled
+        await client!.review(item.target, "reject", await reviewer(folder.uri.fsPath), note);
+        await client!.refresh();
+      }),
+    ),
+    vscode.commands.registerCommand("brain.validate", () =>
+      run("validate", async () => {
+        const result = await client!.validate();
+        for (const line of validationReport(result)) out.appendLine(line);
+        out.show(true);
+        void vscode.window.showInformationMessage(`Brain: ${validationSummary(result)}`);
+      }),
+    ),
     vscode.commands.registerCommand("brain.search", () => searchSymbols(() => client, folder.uri.fsPath)),
     vscode.commands.registerCommand("brain.openOutputFolder", () => {
       const dir = vscode.Uri.file(path.join(folder.uri.fsPath, cfg().get<string>("outputDir", ".brain")));
@@ -157,6 +207,35 @@ export async function activate(context: vscode.ExtensionContext) {
   }
 
   await client.start();
+}
+
+class ReviewProvider implements vscode.TreeDataProvider<ReviewRow> {
+  private readonly changed = new vscode.EventEmitter<void>();
+  readonly onDidChangeTreeData = this.changed.event;
+  private rows: ReviewRow[] = [];
+  update(items: PendingItem[]) {
+    this.rows = reviewRows(items);
+    this.changed.fire();
+  }
+  getChildren(): ReviewRow[] {
+    return this.rows;
+  }
+  getTreeItem(r: ReviewRow): vscode.TreeItem {
+    const t = new vscode.TreeItem(r.label);
+    t.description = r.description;
+    t.tooltip = r.tooltip;
+    t.contextValue = "draft";
+    t.iconPath = new vscode.ThemeIcon(r.stale ? "warning" : "note");
+    t.command = { command: "brain.review.open", title: "Open Draft", arguments: [r] };
+    return t;
+  }
+}
+
+/** Who is reviewing: the git user, else the OS user. Recorded as `human:<name>` in the doc. */
+function reviewer(cwd: string): Promise<string> {
+  return new Promise((resolve) =>
+    execFile("git", ["config", "user.name"], { cwd }, (err, stdout) => resolve(!err && stdout.trim() ? stdout.trim() : os.userInfo().username)),
+  );
 }
 
 /** Quick pick over `search_code`: the same index agents use, so you can see what they would find. */

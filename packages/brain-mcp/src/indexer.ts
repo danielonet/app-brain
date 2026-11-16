@@ -25,12 +25,13 @@ export class Indexer {
   ) {}
 
   /**
-   * Swap the database (in-memory to the on-disk cache after `init`). Waits for any
-   * run in progress, so nothing writes to the old store after this resolves.
+   * Replace the database. `make` receives the current store and returns the new one; it runs
+   * between index runs, so nothing writes to the old store once it is called.
    */
-  swapStore(store: BrainStore): Promise<void> {
+  swapStore(make: (current: BrainStore) => BrainStore): Promise<BrainStore> {
     const done = this.queue.then(() => {
-      this.store = store;
+      this.store = make(this.store);
+      return this.store;
     });
     this.queue = done.catch(() => {});
     return done;

@@ -5,7 +5,7 @@ import type { SymbolKind, UsageEntry, UsageSummary } from "@app-brain/brain-prot
 import type { ExtractedImport, ExtractedSymbol } from "./parse/types";
 
 /** Bump when the schema changes. The database is a derived cache, so a mismatch rebuilds it. */
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 
 export interface FileRow {
   id: number;
@@ -112,11 +112,29 @@ export class BrainStore {
       CREATE INDEX IF NOT EXISTS edge_dst ON edge(dst_file);
       CREATE VIRTUAL TABLE IF NOT EXISTS symbol_fts USING fts5(
         words, qualified_name, signature, docstring, path, tokenize = 'porter unicode61 remove_diacritics 2');
+      CREATE TABLE IF NOT EXISTS llm_call (
+        id INTEGER PRIMARY KEY, ts TEXT NOT NULL, target TEXT NOT NULL, kind TEXT NOT NULL,
+        provider TEXT, model TEXT NOT NULL, mode TEXT NOT NULL,
+        input_tokens INTEGER, output_tokens INTEGER, cached_tokens INTEGER,
+        tokens_source TEXT NOT NULL, cost_usd REAL, cost_source TEXT, outcome TEXT NOT NULL);
+      CREATE INDEX IF NOT EXISTS llm_call_target ON llm_call(target);
       CREATE TABLE IF NOT EXISTS usage (
         id INTEGER PRIMARY KEY, ts TEXT NOT NULL, client TEXT NOT NULL, tool TEXT NOT NULL,
         args TEXT NOT NULL, result_tokens INTEGER NOT NULL, latency_ms REAL NOT NULL, is_error INTEGER NOT NULL);
     `);
     this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+  }
+
+  /**
+   * Copies this database to `file` (VACUUM INTO), so an in-memory index can become the
+   * on-disk cache without being rebuilt. Replaces any existing file.
+   */
+  persistTo(file: string) {
+    mkdirSync(path.dirname(file), { recursive: true });
+    for (const suffix of ["", "-wal", "-shm"]) {
+      try { unlinkSync(file + suffix); } catch { /* absent */ }
+    }
+    this.db.exec(`VACUUM INTO '${file.replace(/'/g, "''")}'`);
   }
 
   close() {
@@ -314,6 +332,65 @@ export class BrainStore {
       byLanguage,
       lastIndexedAt: this.get<{ t: string | null }>("SELECT MAX(indexed_at) AS t FROM file")?.t ?? null,
     };
+  }
+
+  // ---- documentation targets -------------------------------------------------
+
+  /** Parsed files with what ranks them for documentation: how many files import them. */
+  docFiles(): { path: string; content_hash: string; symbols: number; imported_by: number; imports: number }[] {
+    return this.all(
+      `SELECT f.path, f.content_hash,
+              (SELECT COUNT(*) FROM symbol s WHERE s.file_id = f.id) AS symbols,
+              (SELECT COUNT(*) FROM edge e WHERE e.dst_file = f.id) AS imported_by,
+              (SELECT COUNT(*) FROM edge e WHERE e.src_file = f.id) AS imports
+       FROM file f WHERE f.parsed = 1 AND f.content_hash IS NOT NULL ORDER BY f.path`,
+    );
+  }
+
+  fileHash(filePath: string): string | null {
+    return this.get<{ content_hash: string | null }>("SELECT content_hash FROM file WHERE path = ?", filePath)?.content_hash ?? null;
+  }
+
+  /** Parsed files at or below `dir` ("" means the whole repo). */
+  filesUnder(dir: string): { path: string; content_hash: string }[] {
+    const rows = this.all<{ path: string; content_hash: string }>(
+      "SELECT path, content_hash FROM file WHERE parsed = 1 AND content_hash IS NOT NULL ORDER BY path",
+    );
+    if (!dir) return rows;
+    return rows.filter((r) => r.path.startsWith(dir + "/"));
+  }
+
+  symbolsInFile(filePath: string, limit: number): { qualified_name: string; kind: string; exported: number }[] {
+    return this.all(
+      `SELECT s.qualified_name, s.kind, s.exported FROM symbol s JOIN file f ON f.id = s.file_id
+       WHERE f.path = ? ORDER BY s.exported DESC, s.start_line LIMIT ?`,
+      filePath, limit,
+    );
+  }
+
+  // ---- LLM calls (PLAN-VSCODE-EXTENSION.md §4.3) -----------------------------
+
+  logLlmCall(c: {
+    target: string; kind: string; provider: string | null; model: string; mode: string;
+    inputTokens: number | null; outputTokens: number | null; cachedTokens?: number | null;
+    tokensSource: "provider-reported" | "agent-reported" | "estimated";
+    costUsd: number | null; costSource: "price-table" | null; outcome: string;
+  }) {
+    this.run(
+      `INSERT INTO llm_call (ts, target, kind, provider, model, mode, input_tokens, output_tokens, cached_tokens, tokens_source, cost_usd, cost_source, outcome)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      new Date().toISOString(), c.target, c.kind, c.provider, c.model, c.mode, c.inputTokens, c.outputTokens,
+      c.cachedTokens ?? null, c.tokensSource, c.costUsd, c.costSource, c.outcome,
+    );
+  }
+
+  /** Marks the most recent call for a target (approved / rejected). */
+  setLlmOutcome(target: string, outcome: string) {
+    this.run("UPDATE llm_call SET outcome = ? WHERE id = (SELECT MAX(id) FROM llm_call WHERE target = ? AND outcome = 'generated')", outcome, target);
+  }
+
+  llmCalls(): Row[] {
+    return this.all<Row>("SELECT * FROM llm_call ORDER BY id");
   }
 
   // ---- usage log (PLAN-VSCODE-EXTENSION.md §4.4, level 1) ----------------------
