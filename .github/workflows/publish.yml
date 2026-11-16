@@ -1,4 +1,4 @@
-name: Release
+name: Publish
 
 # Publishes to the Visual Studio Marketplace when a version tag (vX.Y.Z) is pushed.
 # The version is the one in packages/brain-vscode/package.json (the extension manifest).
@@ -8,7 +8,7 @@ name: Release
 #
 # One-time setup (outside this repo): a Marketplace publisher whose id matches the
 # "publisher" field in packages/brain-vscode/package.json, with this repository and
-# workflow configured as a trusted publisher. The manifest currently says "app-brain".
+# workflow configured as a trusted publisher. The publisher is danielonnet; the policy "app brain workflow" points at this file (publish.yml).
 
 on:
   push:
