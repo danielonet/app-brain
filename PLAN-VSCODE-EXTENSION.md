@@ -222,6 +222,9 @@ All output lives under **one root folder at the workspace root: `.brain/`**. It 
     │       └── <path>.md        #   per-file docs (if granularity ≥ file)
     ├── drafts/                  # generated, not yet reviewed  [gitignored]
     │   └── (same layout as docs/)
+    ├── graph/                   # derived dependency graph      [commit optional, see §5.1]
+    │   ├── context.jsonld       #   JSON-LD @context (vocabulary), versioned
+    │   └── brain.jsonld         #   the whole graph, deterministic key order
     ├── feedback/                # review notes and ratings     [commit, optional]
     │   └── feedback.jsonl
     ├── reports/                 # exported cost + usage reports [gitignored by default]
@@ -254,6 +257,13 @@ All output lives under **one root folder at the workspace root: `.brain/`**. It 
   tokens_source: provider-reported   # or estimated
   reviewed_by: <git user name>
   reviewed_at: 2026-11-16
+  # typed relations, written as Obsidian links (see §5.1)
+  part_of: "[[docs/modules/src/auth/index]]"
+  depends_on:
+    - "[[docs/files/src/db/pool.ts]]"
+    - "[[docs/files/src/crypto/token.ts]]"
+  see_also:
+    - "[[notes/decisions/0007-session-storage]]"
   ---
   ```
 - **The extension never writes into `docs/` itself.** Edits and approvals go through `brain_admin_review_summary`, so the server can update its status table and keep file and database consistent. The one exception is `notes/`: **Brain: Add Note** can create a file there directly, and the server picks it up through its file watcher.
