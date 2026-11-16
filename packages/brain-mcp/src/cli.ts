@@ -129,6 +129,10 @@ async function main() {
 }
 
 main().catch((e) => {
-  console.error("brain-mcp failed to start:", e instanceof Error ? e.message : e);
+  const message = e instanceof Error ? e.message : String(e);
+  console.error("brain-mcp failed to start:", message);
+  if (message.includes("no such module: fts5")) {
+    console.error(`This Node (${process.version}) has no SQLite full-text search. brain-mcp needs Node 22.16 or newer.`);
+  }
   process.exit(1);
 });

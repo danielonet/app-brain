@@ -27,10 +27,10 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 echo "==> Working in $ROOT_DIR"
 
-# 0. The server uses node:sqlite, which needs Node >= 22.13 (see .nvmrc, and
+# 0. The server uses node:sqlite, which needs Node >= 22.16 (see .nvmrc, and
 #    "engines" in package.json). If the shell resolved an older Node, try to pick
 #    up nvm and switch before anything runs.
-REQUIRED_NODE="22.13.0"
+REQUIRED_NODE="22.16.0"
 node_ok() {
   command -v node >/dev/null 2>&1 || return 1
   node -e '
