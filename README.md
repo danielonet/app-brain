@@ -55,6 +55,8 @@ npm install
 npm test        # builds, then runs the server and extension tests (needs Node 22.13+ for node:sqlite)
 ```
 
+Build the `.vsix` and install it into your VS Code with `scripts/build-and-install.sh` (`--skip-tests`, `--package-only`). CI (`.github/workflows/ci.yml`) runs the tests on Linux, macOS and Windows and uploads the `.vsix` as an artifact.
+
 Run the extension: open this folder in VS Code and press F5 (“Run App Brain extension”), then open any folder in the new window.
 
 Use the server from another agent without VS Code:

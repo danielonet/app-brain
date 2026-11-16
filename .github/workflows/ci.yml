@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    # Server tests (SQLite, daemon, tree-sitter) and extension tests, on every OS the
+    # extension ships to. The webview tests drive a real Chromium on Linux only.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc # node:sqlite needs 22.13+
+          cache: npm
+      - run: npm ci
+      - name: Install Chromium for the webview tests
+        if: runner.os == 'Linux'
+        run: |
+          npm install --no-save playwright
+          npx playwright install --with-deps chromium
+      # Builds (tsc -b), then runs the server and extension tests.
+      - run: npm test
+
+  package:
+    # The installable extension. Uploaded so a pull request can be tried without a local build.
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: scripts/build-and-install.sh --package-only
+      - uses: actions/upload-artifact@v4
+        with:
+          name: app-brain-vsix
+          path: app-brain.vsix
+          if-no-files-found: error
