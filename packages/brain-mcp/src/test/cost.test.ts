@@ -163,7 +163,7 @@ describe("cost over MCP", () => {
   });
   after(async () => {
     await admin.close();
-    rmSync(ws, { recursive: true, force: true });
+    rmSync(ws, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
   });
 
   it("starts empty, and the status carries a running total", async () => {

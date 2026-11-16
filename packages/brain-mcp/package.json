@@ -10,7 +10,7 @@
     "out"
   ],
   "scripts": {
-    "test": "node --test out/test/*.test.js"
+    "test": "node --test --test-timeout=120000 --test-force-exit out/test/*.test.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.8.0",

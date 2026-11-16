@@ -93,7 +93,7 @@ describe("agent tools over a real index", () => {
   });
   after(async () => {
     await c.close();
-    rmSync(ws, { recursive: true, force: true });
+    rmSync(ws, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
   });
 
   it("indexes without any admin token or init, and writes nothing into the workspace", async () => {
@@ -210,7 +210,7 @@ describe("agent tools over a real index", () => {
 describe("usage log excludes the extension's own client", () => {
   let ws: string;
   before(() => { ws = fixture(); });
-  after(() => rmSync(ws, { recursive: true, force: true }));
+  after(() => rmSync(ws, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 }));
 
   it("does not count brain-vscode calls", async () => {
     const c = await connect(ws, { clientName: "brain-vscode", admin: true, watch: false });
@@ -236,7 +236,7 @@ describe("usage log excludes the extension's own client", () => {
 describe("incremental indexing and persistence", () => {
   let ws: string;
   before(() => { ws = fixture(); });
-  after(() => rmSync(ws, { recursive: true, force: true }));
+  after(() => rmSync(ws, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 }));
 
   it("reparses only changed files, drops deleted ones, and survives a restart after init", async () => {
     const c = await connect(ws, { admin: true, watch: false });

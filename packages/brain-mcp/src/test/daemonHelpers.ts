@@ -24,7 +24,7 @@ export function setup(extra: Record<string, string> = {}): Env {
   const runtime = mkdtempSync(path.join(tmpdir(), "brain-daemon-rt-"));
   const env: NodeJS.ProcessEnv = { ...process.env, BRAIN_RUNTIME_DIR: runtime };
   for (const k of Object.keys(env)) if (k.startsWith("BRAIN_LLM_") || k === "BRAIN_ADMIN_TOKEN") delete env[k];
-  return { ws, runtime, env, cleanup: () => { rmSync(ws, { recursive: true, force: true }); rmSync(runtime, { recursive: true, force: true }); } };
+  return { ws, runtime, env, cleanup: () => { rmSync(ws, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 }); rmSync(runtime, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 }); } };
 }
 
 export interface Proc { child: ChildProcess; info: DaemonInfo; stderr: () => string; exit: Promise<number | null>; kill(sig?: NodeJS.Signals): void }

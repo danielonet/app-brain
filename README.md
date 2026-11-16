@@ -52,7 +52,7 @@ Not built yet: notes (`add_note`), symbol-level call edges (LSP/SCIP), the HTTP 
 
 ```sh
 npm install
-npm test        # builds, then runs the server and extension tests (needs Node 22.13+ for node:sqlite)
+npm test        # builds, then runs the server and extension tests (needs Node 22.16+ for node:sqlite)
 ```
 
 Build the `.vsix` and install it into your VS Code with `scripts/build-and-install.sh` (`--skip-tests`, `--package-only`). CI (`.github/workflows/ci.yml`) runs the tests on Linux, macOS and Windows and uploads the `.vsix` as an artifact.

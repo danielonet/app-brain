@@ -75,8 +75,8 @@ describe("cost view, in a real browser", { skip: !chromium && "playwright is not
   after(async () => {
     await browser?.close();
     await mcp?.close();
-    rmSync(ws, { recursive: true, force: true });
-    rmSync(outDir, { recursive: true, force: true });
+    rmSync(ws, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
+    rmSync(outDir, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
   });
 
   async function open(data: CostSummary, opts: { width?: number; dark?: boolean } = {}) {

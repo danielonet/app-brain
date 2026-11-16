@@ -40,7 +40,7 @@ describe("documentation flow: draft, review, approve", () => {
   after(async () => {
     await agent.close();
     await admin.close();
-    rmSync(ws, { recursive: true, force: true });
+    rmSync(ws, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
   });
 
   it("ranks undocumented targets by how many files import them, before init, without writing anything", async () => {
@@ -298,7 +298,7 @@ describe("documentation flow: draft, review, approve", () => {
 describe("init keeps the index (no rebuild gap)", () => {
   let ws: string;
   before(() => { ws = fixture(); });
-  after(() => rmSync(ws, { recursive: true, force: true }));
+  after(() => rmSync(ws, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 }));
 
   it("a summary saved straight after init sees the full dependency graph", async () => {
     const c = await connect(ws, { admin: true, clientName: "brain-vscode" });
@@ -346,6 +346,6 @@ describe("approval never recomputes dependencies from a partial index", () => {
       await make(() => true).review({ target: "src/auth/session.ts", action: "approve", by: "t" });
       assert.deepEqual(depsOf("knowledge"), [], "refreshed when the index is ready");
       store.close();
-    } finally { rmSync(root, { recursive: true, force: true }); }
+    } finally { rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 }); }
   });
 });

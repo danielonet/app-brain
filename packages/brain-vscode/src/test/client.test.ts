@@ -15,7 +15,7 @@ describe("BrainClient against the real brain-mcp", () => {
     writeFileSync(path.join(ws, "src/a.ts"), "/** Adds numbers. */\nexport function addNumbers(a: number, b: number) { return a + b; }\n");
     writeFileSync(path.join(ws, "src/b.py"), "b = 2\n");
   });
-  after(() => rmSync(ws, { recursive: true, force: true }));
+  after(() => rmSync(ws, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 }));
 
   const make = (events: { conn: ConnState; status: BrainStatus | null }[], serverPath?: string) =>
     new BrainClient({

@@ -62,7 +62,7 @@ describe("scan helpers", () => {
 describe("brain-mcp over stdio", () => {
   let ws: string;
   before(() => { ws = fixture(); });
-  after(() => rmSync(ws, { recursive: true, force: true }));
+  after(() => rmSync(ws, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 }));
 
   it("serves status and config to any client, without admin", async () => {
     const c = await connect(ws, undefined);
