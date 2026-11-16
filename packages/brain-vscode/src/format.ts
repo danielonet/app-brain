@@ -35,10 +35,13 @@ export function statusBarText(conn: ConnState, status: BrainStatus | null): { te
     tooltip:
       `Brain ${status.serverVersion}\n${sym} symbols, ${status.index.edges} import links\n` +
       `Docs: ${k.reviewed} reviewed, ${k.drafts} awaiting review, ${k.stale} stale\n` +
+      (status.cost.calls > 0 ? `LLM spend: ${spend(status.cost.spendUsd)}${status.cost.complete ? "" : " or more (some calls could not be priced)"} over ${status.cost.calls} call${status.cost.calls === 1 ? "" : "s"}\n` : "") +
       `Output: ${status.outputDir}${langs ? `\n${langs}` : ""}`,
     error: false,
   };
 }
+
+const spend = (n: number) => (n === 0 ? "$0.00" : n < 0.01 ? "<$0.01" : `$${n.toFixed(2)}`);
 
 /** Snippet for `.mcp.json` (Claude Code, Cursor). No admin token: agents get the read-only tools. */
 export function mcpConfigSnippet(serverPath: string, workspace: string, outputDir: string): string {

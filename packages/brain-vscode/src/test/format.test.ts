@@ -5,7 +5,7 @@ import { activityItems, describeArgs, flashText, mcpConfigSnippet, reviewRows, s
 
 const base: BrainStatus = {
   state: "idle", initialised: true, workspace: "/w", outputDir: "/w/.brain", serverVersion: "0.0.0",
-  protocolVersion: "0.2", startedAt: "", knowledge: { reviewed: 2, drafts: 0, stale: 1 }, index: { files: 3, symbols: 12, edges: 4, byLanguage: { typescript: 2, python: 1 }, lastIndexedAt: null }, message: null,
+  protocolVersion: "0.2", startedAt: "", knowledge: { reviewed: 2, drafts: 0, stale: 1 }, cost: { calls: 0, spendUsd: 0, complete: true }, index: { files: 3, symbols: 12, edges: 4, byLanguage: { typescript: 2, python: 1 }, lastIndexedAt: null }, message: null,
 };
 
 describe("statusBarText", () => {
@@ -20,6 +20,13 @@ describe("statusBarText", () => {
     assert.match(v.text, / · 3 to review$/);
     assert.match(v.tooltip, /2 reviewed, 3 awaiting review, 1 stale/);
     assert.ok(!statusBarText("connected", base).text.includes("to review"));
+  });
+  it("shows the running spend, and says when it is a lower bound", () => {
+    assert.ok(!statusBarText("connected", base).tooltip.includes("spend"), "nothing to show before any call");
+    const calls = { ...base, cost: { calls: 3, spendUsd: 1.234, complete: true } };
+    assert.match(statusBarText("connected", calls).tooltip, /LLM spend: \$1\.23 over 3 calls/);
+    assert.match(statusBarText("connected", { ...calls, cost: { calls: 1, spendUsd: 0, complete: false } }).tooltip, /\$0\.00 or more \(some calls could not be priced\) over 1 call\n/);
+    assert.match(statusBarText("connected", { ...calls, cost: { calls: 2, spendUsd: 0.004, complete: true } }).tooltip, /<\$0\.01/);
   });
   it("singular", () => assert.match(statusBarText("connected", { ...base, index: { ...base.index, files: 1, symbols: 1 } }).text, /1 file · 1 symbol$/));
   it("not initialised", () => assert.match(statusBarText("connected", { ...base, initialised: false }).text, /not initialised/));

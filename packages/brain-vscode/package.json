@@ -8,6 +8,8 @@
   "license": "MIT",
   "engines": { "vscode": "^1.101.0" },
   "categories": ["Other", "AI"],
+  "icon": "media/icon.png",
+  "galleryBanner": { "color": "#0a2a6b", "theme": "dark" },
   "main": "out/extension.js",
   "activationEvents": ["onStartupFinished"],
   "capabilities": {
@@ -35,6 +37,8 @@
       { "command": "brain.stop", "title": "Brain: Stop Server" },
       { "command": "brain.reindex", "title": "Brain: Reindex Workspace" },
       { "command": "brain.openSettings", "title": "Brain: Open Settings", "icon": "$(gear)" },
+      { "command": "brain.showCost", "title": "Brain: Show Cost & Models", "icon": "$(graph)" },
+      { "command": "brain.exportCostReport", "title": "Brain: Export Cost Report" },
       { "command": "brain.showGraph", "title": "Brain: Show Dependency Graph", "icon": "$(type-hierarchy)" },
       { "command": "brain.exportGraph", "title": "Brain: Export Graph (JSON-LD)" },
       { "command": "brain.search", "title": "Brain: Search Symbols" },
@@ -49,7 +53,8 @@
     "menus": {
       "view/title": [
         { "command": "brain.showGraph", "when": "view == brain.review", "group": "navigation@1" },
-        { "command": "brain.openSettings", "when": "view == brain.review", "group": "navigation@2" }
+        { "command": "brain.showCost", "when": "view == brain.review", "group": "navigation@2" },
+        { "command": "brain.openSettings", "when": "view == brain.review", "group": "navigation@3" }
       ],
       "view/item/context": [
         { "command": "brain.review.open", "when": "view == brain.review && viewItem == draft", "group": "inline@1" },

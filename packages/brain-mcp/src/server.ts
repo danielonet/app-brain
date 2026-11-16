@@ -19,6 +19,7 @@ import {
   SYMBOL_KINDS,
 } from "@app-brain/brain-protocol";
 import { Indexer } from "./indexer";
+import { summarize, toCsv, toMarkdown } from "./cost";
 import { buildGraph, toJsonLd } from "./okf/graph";
 import { Knowledge } from "./okf/knowledge";
 import { BrainStore, type SymbolHit } from "./store";
@@ -101,6 +102,14 @@ export function createBrainServer(opts: BrainServerOptions) {
   const state = { state: "starting" as BrainStatus["state"], message: null as string | null };
   let lastNotify = 0;
 
+  async function costSummary() {
+    return summarize(store.llmCallRows(), await ws.readConfig());
+  }
+  async function costTotals() {
+    const s = await costSummary();
+    return { calls: s.totals.calls, spendUsd: s.totals.spendUsd, complete: s.complete };
+  }
+
   async function status(): Promise<BrainStatus> {
     const c = store.counts();
     return {
@@ -113,6 +122,7 @@ export function createBrainServer(opts: BrainServerOptions) {
       startedAt,
       index: { files: c.files, symbols: c.symbols, edges: c.edges, byLanguage: c.byLanguage, lastIndexedAt: c.lastIndexedAt },
       knowledge: await knowledge.counts(),
+      cost: await costTotals(),
       message: state.message,
     };
   }
@@ -149,6 +159,7 @@ export function createBrainServer(opts: BrainServerOptions) {
   resource("config", Resources.config, "Brain config", "Team config (.brain/config.json), or defaults when not initialised.", () => ws.readConfig());
   resource("pending-review", Resources.pendingReview, "Pending review", "Generated docs in drafts/ waiting for a human to approve or reject them.", () => knowledge.pending());
   resource("coverage", Resources.coverage, "Documentation coverage", "How many files and modules have reviewed, draft or stale docs.", () => knowledge.coverage());
+  resource("cost-summary", Resources.costSummary, "LLM cost", "Spend, tokens and models behind generated docs, with how much of it is exact versus estimated.", costSummary);
   resource("usage", Resources.usage, "Agent usage", "Recent calls agents made to the brain tools, with totals by client and tool.", () => store.usageSummary());
 
   // ---- agent tools: read-only, no admin token ---------------------------------
@@ -404,6 +415,7 @@ export function createBrainServer(opts: BrainServerOptions) {
       const result = await ws.writeConfig(config);
       if ("errors" in result) return fail("Config is invalid.", result.errors);
       notify(Resources.config);
+      notify(Resources.costSummary); // a new price table can price old calls
       notify(Resources.status);
       return json(result.config);
     }),
@@ -465,6 +477,24 @@ export function createBrainServer(opts: BrainServerOptions) {
       await mkdir(path.dirname(file), { recursive: true });
       await writeFile(file, JSON.stringify(doc, null, 2) + "\n");
       return json({ file: path.relative(ws.root, file).split(path.sep).join("/"), nodes: (doc["@graph"] as { type: string }[]).filter((n) => n.type !== "Dependency").length, edges: (doc["@graph"] as { type: string }[]).filter((n) => n.type === "Dependency").length });
+    }),
+  );
+
+  server.registerTool(
+    AdminTools.exportCostReport,
+    { description: "Write the cost report to <outputDir>/reports/cost-<date>.csv and .md (gitignored by default)." },
+    guarded(async () => {
+      const config = await ws.readConfig();
+      const rows = store.llmCallRows();
+      const stamp = new Date().toISOString().slice(0, 10);
+      const dir = ws.abs("reports");
+      await mkdir(dir, { recursive: true });
+      const csv = path.join(dir, `cost-${stamp}.csv`);
+      const md = path.join(dir, `cost-${stamp}.md`);
+      await writeFile(csv, toCsv(rows, config.pricing));
+      await writeFile(md, toMarkdown(summarize(rows, config)));
+      const rel = (f: string) => path.relative(ws.root, f).split(path.sep).join("/");
+      return json({ csv: rel(csv), markdown: rel(md), calls: rows.length });
     }),
   );
 

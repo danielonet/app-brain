@@ -4,6 +4,7 @@ import * as path from "node:path";
 import * as vscode from "vscode";
 import type { BrainStatus, PendingItem, UsageSummary } from "@app-brain/brain-protocol";
 import { BrainClient } from "./client";
+import { CostPanel } from "./costPanel";
 import { GraphPanel } from "./graphPanel";
 import { SettingsPanel } from "./settingsPanel";
 import { ActivityItem, ConnState, ReviewRow, activityItems, flashText, mcpConfigSnippet, reviewRows, statusBarText, validationReport, validationSummary } from "./format";
@@ -113,6 +114,7 @@ export async function activate(context: vscode.ExtensionContext) {
       onState,
       onUsage,
       onPending,
+      onCost: () => CostPanel.refreshIfOpen(),
     });
 
   const run = async (label: string, fn: () => Promise<unknown>) => {
@@ -189,6 +191,14 @@ export async function activate(context: vscode.ExtensionContext) {
     ),
     vscode.commands.registerCommand("brain.openSettings", () =>
       SettingsPanel.show(context.extensionUri, () => client, path.posix.join(cfg().get<string>("outputDir", ".brain"), "config.json")),
+    ),
+    vscode.commands.registerCommand("brain.showCost", () => CostPanel.show(context.extensionUri, () => client, folder.uri.fsPath)),
+    vscode.commands.registerCommand("brain.exportCostReport", () =>
+      run("export cost report", async () => {
+        const r = await client!.exportCostReport();
+        const pick = await vscode.window.showInformationMessage(`Cost report written: ${r.calls} call${r.calls === 1 ? "" : "s"} (${r.markdown}).`, "Open report");
+        if (pick === "Open report") await vscode.window.showTextDocument(vscode.Uri.file(path.join(folder.uri.fsPath, r.markdown)));
+      }),
     ),
     vscode.commands.registerCommand("brain.showGraph", () => GraphPanel.show(context.extensionUri, () => client, folder.uri.fsPath)),
     vscode.commands.registerCommand("brain.exportGraph", () =>

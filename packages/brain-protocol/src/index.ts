@@ -19,6 +19,7 @@ export const Resources = {
   usage: "brain://usage",
   pendingReview: "brain://knowledge/pending-review",
   coverage: "brain://coverage",
+  costSummary: "brain://cost/summary",
 } as const;
 
 /** Read-only tools for agents. Available to every client, no admin token. */
@@ -46,6 +47,7 @@ export const AdminTools = {
   reviewSummary: "brain_admin_review_summary",
   validate: "brain_admin_validate",
   exportGraph: "brain_admin_export_graph",
+  exportCostReport: "brain_admin_export_cost_report",
 } as const;
 
 export const ENV_ADMIN_TOKEN = "BRAIN_ADMIN_TOKEN";
@@ -119,6 +121,11 @@ export const StatusSchema = z.object({
     reviewed: z.number().int().nonnegative(),
     drafts: z.number().int().nonnegative(),
     stale: z.number().int().nonnegative(),
+  }),
+  cost: z.object({
+    calls: z.number().int().nonnegative(),
+    spendUsd: z.number().nonnegative().describe("Sum of the costs that are known."),
+    complete: z.boolean().describe("False when some calls could not be priced, so the real total is higher."),
   }),
   message: z.string().nullable(),
 });
@@ -283,3 +290,72 @@ export const GraphSchema = z.object({
   truncated: z.boolean(),
 });
 export type Graph = z.infer<typeof GraphSchema>;
+
+// ---------------------------------------------------------------------------
+// Cost report: PLAN-VSCODE-EXTENSION.md §4.3
+// ---------------------------------------------------------------------------
+
+export const TOKEN_SOURCES = ["provider-reported", "agent-reported", "estimated"] as const;
+export type TokenSource = (typeof TOKEN_SOURCES)[number];
+export const OUTCOMES = ["generated", "approved", "rejected", "regenerated", "error"] as const;
+
+const Money = z.number().nonnegative().nullable().describe("USD, or null when it cannot be known.");
+
+export const CostCallSchema = z.object({
+  id: z.number().int(),
+  ts: z.string(),
+  target: z.string(),
+  kind: z.string(),
+  model: z.string(),
+  mode: z.string(),
+  tokensIn: z.number().int().nullable(),
+  tokensOut: z.number().int().nullable(),
+  tokensSource: z.enum(TOKEN_SOURCES),
+  costUsd: Money,
+  costSource: z.enum(["recorded", "current-prices"]).nullable().describe("`current-prices`: priced now from today's price table because it had no price when the call was made."),
+  outcome: z.string(),
+});
+export type CostCall = z.infer<typeof CostCallSchema>;
+
+const Slice = {
+  calls: z.number().int().nonnegative(),
+  tokensOut: z.number().int().nonnegative(),
+  costUsd: z.number().nonnegative().describe("Known cost only."),
+};
+
+export const CostSummarySchema = z.object({
+  generatedAt: z.string(),
+  totals: z.object({
+    calls: z.number().int(),
+    targets: z.number().int().describe("Distinct files and modules documented."),
+    approved: z.number().int(),
+    rejected: z.number().int(),
+    pending: z.number().int().describe("Written, waiting for review."),
+    regenerations: z.number().int().describe("Calls beyond the first for the same target."),
+    tokensIn: z.number().int().describe("Known input tokens."),
+    callsWithoutInputTokens: z.number().int(),
+    tokensOut: z.number().int(),
+    spendUsd: z.number().nonnegative(),
+    costPerApprovedUsd: Money.describe("All spend divided by approved docs."),
+    rejectionRate: z.number().min(0).max(1).nullable().describe("Rejected / (approved + rejected)."),
+  }),
+  tokensSource: z.object({ "provider-reported": z.number().int(), "agent-reported": z.number().int(), estimated: z.number().int() }),
+  complete: z.boolean().describe("Every call has a cost."),
+  unpricedModels: z.array(z.string()).describe("Models used that have no entry in the price table."),
+  budget: z.object({
+    capUsd: z.number().nullable(),
+    spentUsd: z.number(),
+    remainingUsd: z.number().nullable(),
+    state: z.enum(["none", "ok", "near", "exceeded"]),
+  }),
+  byDay: z.array(z.object({ day: z.string(), ...Slice })),
+  byModel: z.array(z.object({
+    model: z.string(), ...Slice,
+    approved: z.number().int(), rejected: z.number().int(), pending: z.number().int(),
+    tokensIn: z.number().int(), priced: z.boolean(), estimatedShare: z.number().min(0).max(1),
+  })),
+  byMode: z.array(z.object({ mode: z.string(), ...Slice })),
+  byModule: z.array(z.object({ module: z.string(), ...Slice })),
+  recent: z.array(CostCallSchema),
+});
+export type CostSummary = z.infer<typeof CostSummarySchema>;

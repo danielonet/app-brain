@@ -30,6 +30,23 @@ export interface SymbolHit {
   exported: number;
 }
 
+export interface LlmCallRow {
+  id: number;
+  ts: string;
+  target: string;
+  kind: string;
+  provider: string | null;
+  model: string;
+  mode: string;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cached_tokens: number | null;
+  tokens_source: "provider-reported" | "agent-reported" | "estimated";
+  cost_usd: number | null;
+  cost_source: string | null;
+  outcome: string;
+}
+
 export interface EdgeRow {
   from: string;
   to: string;
@@ -407,8 +424,8 @@ export class BrainStore {
     this.run("UPDATE llm_call SET outcome = ? WHERE id = (SELECT MAX(id) FROM llm_call WHERE target = ? AND outcome = 'generated')", outcome, target);
   }
 
-  llmCalls(): Row[] {
-    return this.all<Row>("SELECT * FROM llm_call ORDER BY id");
+  llmCallRows(): LlmCallRow[] {
+    return this.all<LlmCallRow>("SELECT * FROM llm_call ORDER BY id");
   }
 
   // ---- usage log (PLAN-VSCODE-EXTENSION.md §4.4, level 1) ----------------------

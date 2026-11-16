@@ -14,6 +14,7 @@ import {
   PendingItem,
   ReviewResult,
   ValidationResult,
+  CostSummary,
   ReindexResult,
   Resources,
   UsageSummary,
@@ -29,6 +30,8 @@ export interface BrainClientOptions {
   onState: (state: ConnState, status: BrainStatus | null) => void;
   onUsage?: (usage: UsageSummary) => void;
   onPending?: (items: PendingItem[]) => void;
+  /** The server says cost data changed (a doc was written, reviewed, or prices were edited). */
+  onCost?: () => void;
 }
 
 /** A tool call the server answered with an error. `details` carries field errors for set_config. */
@@ -82,6 +85,7 @@ export class BrainClient {
         if (n.params.uri === Resources.status) void this.refresh();
         else if (n.params.uri === Resources.usage) void this.refreshUsage();
         else if (n.params.uri === Resources.pendingReview) void this.refreshPending();
+        else if (n.params.uri === Resources.costSummary) this.opts.onCost?.();
       });
       await client.connect(transport);
       this.client = client;
@@ -95,6 +99,7 @@ export class BrainClient {
       await client.subscribeResource({ uri: Resources.status });
       await client.subscribeResource({ uri: Resources.usage });
       await client.subscribeResource({ uri: Resources.pendingReview });
+      await client.subscribeResource({ uri: Resources.costSummary });
       this.restarts = 0;
       await this.refresh();
       await this.refreshUsage();
@@ -170,6 +175,16 @@ export class BrainClient {
   /** Rejects with a ToolError whose `details` is the list of field errors. */
   setConfig(config: Record<string, unknown>): Promise<Record<string, unknown>> {
     return this.call(AdminTools.setConfig, { config });
+  }
+
+  async getCostSummary(): Promise<CostSummary> {
+    if (!this.client) throw new Error("Brain server is not running.");
+    const res = await this.client.readResource({ uri: Resources.costSummary });
+    return JSON.parse((res.contents[0] as { text: string }).text) as CostSummary;
+  }
+
+  exportCostReport(): Promise<{ csv: string; markdown: string; calls: number }> {
+    return this.call(AdminTools.exportCostReport);
   }
 
   /** The dependency graph (an agent tool, so these calls are not counted as agent usage). */
