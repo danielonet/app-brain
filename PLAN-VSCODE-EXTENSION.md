@@ -55,7 +55,7 @@ This reverses one choice in PLAN.md §3, where the extension ran the file watche
 
 The extension talks to the server with the same protocol agents use. This avoids inventing a second API.
 
-- **Reads** use MCP **resources**: `brain://status`, `brain://config`, `brain://coverage`, `brain://docs/pending-review`, `brain://usage`.
+- **Reads** use MCP **resources**: `brain://status`, `brain://config`, `brain://coverage`, `brain://knowledge/pending-review`, `brain://usage`.
 - **Actions** use MCP **tools** prefixed `brain_admin_` (reindex, generate docs, approve a summary, save config, submit feedback). Agents are told not to use these. They are hidden from the default agent tool list, and the server exposes them only to clients that connect as the extension (see §8).
 - **Live updates** use MCP **notifications**: `notifications/progress` for long jobs (indexing, doc generation) and `notifications/resources/updated` so views refresh without polling.
 
@@ -81,8 +81,9 @@ The extension talks to the server with the same protocol agents use. This avoids
 | LLM access | Owns the call (BYO key or local model) or delegates to the agent | Can offer `vscode.lm` as a provider, see §6 |
 | Config | Owns the schema and validation, persists `.brain/config.json` | Edits it through forms, never writes the file directly |
 | Output files | Writes all files under `.brain/` | Opens and displays them, edits notes on request |
-| Review state | Stores status (`generated`, `reviewed`, `stale`) | Collects the human decision |
+| Review state | Writes OKF `status` / `verified` / `generated`, derives the trust tier (unverified, machine-confirmed, human-reviewed) and computes staleness | Collects the human decision |
 | Feedback | Stores and uses it | Collects it |
+| OKF bundle and graph | Writes concepts, `index.md`, `log.md`; builds the dependency graph from links and code edges; validates | Displays the graph and health checks, never edits the bundle directly |
 | LLM cost and model records | Counts tokens, applies the price table, stores `llm_call` rows, enforces the budget cap | Shows estimates and reports, edits prices and the cap |
 | Agent usage log | Logs every MCP call by client and session, correlates follow-up actions | Shows the live indicator, timeline and per-session summary |
 | Lifecycle | Runs until stopped | Starts, health-checks, restarts, shows logs |
@@ -112,15 +113,16 @@ Key settings:
 | `llm.mode` | personal | `agent` | `agent` (the user's agent writes docs), `vscode-lm`, `api-key`, `local` |
 | `server.transport` | personal | `http` | `http` (daemon) or `stdio` |
 | `server.command` | personal | bundled | Path to the `brain-mcp` entry point, for development |
-| `commitDocs` | team config | `true` | Whether `.brain/docs` is meant to be committed (affects the generated `.gitignore`) |
+| `commitKnowledge` | team config | `true` | Whether `.brain/knowledge` (the OKF bundle) is meant to be committed (affects the generated `.gitignore`) |
 
 ### 4.2 Visualisation and feedback
 
 | Surface | Shows | Data source |
 |---|---|---|
 | **Status bar item** | `Brain: ready · 2,314 symbols · 41 stale`, spinner while working, red on error | `brain://status` |
-| **Brain view** (activity bar) | Tree: Modules → files → symbols, each with a status icon (generated / reviewed / stale / none) | `brain://coverage`, `get_overview` |
-| **Review queue** | Pending summaries with a side-by-side diff of code and doc. Actions: Approve, Edit, Reject, Regenerate | `brain://docs/pending-review`, `brain_admin_review_summary` |
+| **Brain view** (activity bar) | Tree: Modules → files → symbols, each with a trust icon (unverified / machine-confirmed / human-reviewed, plus stale and none) | `brain://coverage`, `get_overview` |
+| **Review queue** | Pending summaries with a side-by-side diff of code and doc. Actions: Approve, Edit, Reject, Regenerate | `brain://knowledge/pending-review`, `brain_admin_review_summary` |
+| **Dependency Graph** (webview) | Interactive graph of concepts: nodes coloured by trust tier, stale ones outlined, edges for links and `depends_on`; click to open the file, filter by module, show impact of a change. Side panel lists broken links, orphans and cycles | `get_graph`, `brain://graph/health` |
 | **Coverage dashboard** (webview) | Percent documented by module, stale count over time, index freshness, top undocumented central symbols | `brain://coverage` |
 | **Agent activity** (webview) | Which tools agents called, with what query, what came back, latency, tokens, confidence badge, per-session summary (§4.4) | `brain://usage` |
 | **Cost & Models** (webview) | Spend and tokens by day, model, job and module; exact vs estimated share; pre-run estimate (§4.3) | `brain://cost/summary` |
@@ -162,7 +164,7 @@ The server records every LLM call it makes or oversees for doc generation, and t
 
 **Reporting in the extension**
 - **Cost & Models view** (webview): spend by day, by model, by job and by module; tokens in/out; share of calls estimated vs exact; cost per approved doc; number of regenerations (a high number points to a poor prompt or model).
-- **Per-doc provenance:** hover or the review queue shows `model`, `tokens`, `cost` for each draft, and the same values are written into the doc's front matter (`model`, `cost_usd`, `tokens_in`, `tokens_out`).
+- **Per-doc provenance:** hover or the review queue shows `model`, `tokens`, `cost` for each draft, and the same values are written into the concept's front matter under `brain.llm` (`model`, `cost_usd`, `tokens_in`, `tokens_out`).
 - **Status bar tooltip:** running total for the current job.
 - **Export:** *Brain: Export Cost Report* writes `.brain/reports/cost-<date>.csv` and `.md` (gitignored by default; commit them if the team wants an audit trail).
 
@@ -193,7 +195,7 @@ The extension must label which level a line is at. It does not claim "the LLM us
 
 ### 4.5 Commands
 
-`Brain: Open Settings`, `Brain: Start Server`, `Brain: Stop Server`, `Brain: Reindex Workspace`, `Brain: Generate Docs for Module…`, `Brain: Open Review Queue`, `Brain: Open Output Folder`, `Brain: Add Note`, `Brain: Estimate Generation Cost`, `Brain: Export Cost Report`, `Brain: Check Agent Connection`, `Brain: Install Usage Hooks`, `Brain: Copy MCP Config for Claude Code`, `Brain: Copy MCP Config for Cursor`, `Brain: Show Server Logs`.
+`Brain: Open Settings`, `Brain: Start Server`, `Brain: Stop Server`, `Brain: Reindex Workspace`, `Brain: Generate Docs for Module…`, `Brain: Open Review Queue`, `Brain: Open Output Folder`, `Brain: Show Dependency Graph`, `Brain: Validate Knowledge Bundle`, `Brain: Open Bundle in Obsidian`, `Brain: Export Graph (JSON-LD)`, `Brain: Add Note`, `Brain: Estimate Generation Cost`, `Brain: Export Cost Report`, `Brain: Check Agent Connection`, `Brain: Install Usage Hooks`, `Brain: Copy MCP Config for Claude Code`, `Brain: Copy MCP Config for Cursor`, `Brain: Show Server Logs`.
 
 ### 4.6 Making agents find the server
 
@@ -202,73 +204,146 @@ The extension must label which level a line is at. It does not claim "the LLM us
 
 ---
 
-## 5. Where the output goes
+## 5. Where the output goes, and the file format (OKF)
 
 All output lives under **one root folder at the workspace root: `.brain/`**. It is configurable with `outputDir`, and the path is relative to the workspace root. In a multi-root workspace each folder gets its own `.brain/`.
+
+**Format: the brain files are an [Open Knowledge Format (OKF)](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md) v0.2 bundle.** OKF is Google Cloud's open spec for knowledge that people and AI agents both read: a directory of Markdown files with YAML front matter, where Markdown links between files form the graph. It needs no schema registry and no tooling, so any tool that reads Markdown (including Obsidian and any OKF-aware agent) can read the brain. The dependency graph comes straight from those links plus a typed `depends_on` list (§5.2). Note: OKF is young (v0.1 in June 2026, v0.2 since), single-vendor and still a draft, so the plan pins `okf_version: "0.2"` and keeps all brain-specific data in one namespaced front matter key, so a later spec change touches little.
 
 ```
 <workspace>/
 └── .brain/
-    ├── config.json              # team config                 [commit]
-    ├── notes/                   # curated human knowledge      [commit]
-    │   ├── decisions/           #   why we did X
-    │   ├── conventions.md
-    │   └── gotchas.md
-    ├── docs/                    # reviewed, approved docs      [commit]
+    ├── config.json              # team config                          [commit]
+    ├── knowledge/               # THE OKF BUNDLE: reviewed knowledge   [commit]
+    │   ├── index.md             #   root index, carries okf_version: "0.2"
+    │   ├── log.md               #   update history, newest first (server appends)
     │   ├── architecture.md      #   top-level overview
     │   ├── modules/
-    │   │   └── <path>/index.md  #   one per directory / module
-    │   └── files/
-    │       └── <path>.md        #   per-file docs (if granularity ≥ file)
-    ├── drafts/                  # generated, not yet reviewed  [gitignored]
-    │   └── (same layout as docs/)
-    ├── graph/                   # derived dependency graph      [commit optional, see §5.1]
-    │   ├── context.jsonld       #   JSON-LD @context (vocabulary), versioned
-    │   └── brain.jsonld         #   the whole graph, deterministic key order
-    ├── feedback/                # review notes and ratings     [commit, optional]
+    │   │   └── <path>.md        #   one concept per directory / module (index.md is reserved)
+    │   ├── files/
+    │   │   └── <path>.md        #   one concept per source file (granularity ≥ file)
+    │   ├── notes/               #   curated human knowledge
+    │   │   ├── decisions/       #     why we did X
+    │   │   ├── conventions.md
+    │   │   └── gotchas.md
+    │   └── references/          #   external material the docs cite
+    ├── drafts/                  # generated, not yet reviewed          [gitignored]
+    │   └── (same layout as knowledge/)
+    ├── graph/
+    │   └── graph.jsonld         # derived JSON-LD export of the graph  [gitignored, optional]
+    ├── feedback/                # review notes and ratings             [commit, optional]
     │   └── feedback.jsonl
-    ├── reports/                 # exported cost + usage reports [gitignored by default]
+    ├── reports/                 # exported cost + usage reports        [gitignored by default]
     │   ├── cost-<date>.csv
     │   └── cost-<date>.md
-    ├── site/                    # static markdown/HTML export  [gitignored]
-    ├── .cache/                  #                              [gitignored]
+    ├── site/                    # static markdown/HTML export          [gitignored]
+    ├── .cache/                  #                                      [gitignored]
     │   ├── brain.db             #   SQLite: graph, FTS, embeddings, llm_call, usage log
     │   ├── server.json          #   {pid, port, token} for the running daemon
     │   └── logs/
     └── .gitignore               # written by the server, covers the ignored paths above
 ```
 
-**Rules**
+### 5.1 OKF rules the brain follows
 
-- **Everything under `docs/`, `notes/` and `config.json` is plain Markdown or JSON, human-readable, and the source of truth.** `.cache/` can be deleted at any time and rebuilt from the code plus these files.
-- **Drafts vs reviewed.** The server writes every generated doc to `drafts/` first. **Approving a doc in the extension moves it to `docs/`.** This makes "generated, unreviewed" a physical location, not just a flag, so a PR only ever contains reviewed docs. Regenerating a stale reviewed doc writes a new draft and leaves the old reviewed doc in place, marked stale, until the new one is approved.
-- **Front matter on every doc**, so status survives a lost database:
+- **A concept is one Markdown file.** Its concept ID is its path inside `knowledge/` without `.md` (e.g. `files/src/auth/session.ts`). `index.md` and `log.md` are reserved names, so no concept uses them for content. A module's concept is therefore `modules/<path>.md` (e.g. `modules/src/auth.md`), and each directory's own `index.md` is the generated listing.
+- **Only `type` is required**, and the brain always sets `title` and `description` too (the index generator uses `description`). Types used: `Brain Architecture`, `Brain Module`, `Brain File`, `Brain Decision`, `Brain Convention`, `Brain Gotcha`, `Brain Note`. Types are free strings in OKF, so other tools simply treat them as generic concepts.
+- **Links are standard Markdown links, bundle-absolute**, starting with `/`: `[session store](/files/src/auth/session.ts.md)`. Absolute links stay valid when a file moves within the bundle. A symbol inside a file is addressed by heading anchor: `/files/src/auth/session.ts.md#sessionstoreget`. Symbols are headings in their file's concept, not files of their own.
+- **Broken links are allowed**, as OKF says (they can stand for knowledge not yet written). The extension shows them as information, not errors.
+- **Unknown keys are preserved**, so humans can add front matter and the server must not drop it on rewrite.
+- **Provenance (`sources`).** Each generated concept lists the code it was derived from, with an `id` so the body can cite it with a footnote.
+- **Trust and lifecycle use the OKF fields**, instead of a private status flag:
 
-  ```yaml
-  ---
-  target: src/auth/session.ts        # file, directory or symbol
-  kind: file                         # symbol | file | module | architecture
-  status: reviewed                   # generated | reviewed | stale
-  built_from_hash: 9f2c1e…           # hash of the code it describes
-  model: claude-…                    # or "human" when hand-written
-  tokens_in: 1840                    # see §4.3; estimated in agent / vscode-lm modes
-  tokens_out: 260
-  cost_usd: 0.0123
-  tokens_source: provider-reported   # or estimated
-  reviewed_by: <git user name>
-  reviewed_at: 2026-11-16
-  # typed relations, written as Obsidian links (see §5.1)
-  part_of: "[[docs/modules/src/auth/index]]"
-  depends_on:
-    - "[[docs/files/src/db/pool.ts]]"
-    - "[[docs/files/src/crypto/token.ts]]"
-  see_also:
-    - "[[notes/decisions/0007-session-storage]]"
-  ---
-  ```
-- **The extension never writes into `docs/` itself.** Edits and approvals go through `brain_admin_review_summary`, so the server can update its status table and keep file and database consistent. The one exception is `notes/`: **Brain: Add Note** can create a file there directly, and the server picks it up through its file watcher.
+  | OKF field | Brain use |
+  |---|---|
+  | `generated: {by, at}` | Who wrote the current text. `by` is `brain-mcp/<version>`, or the agent in `agent` mode. `at` is the last content change |
+  | `verified: {by, at}` | Written when a person approves in the extension: `by: human:<git user>`. A bare `verified` with no `human:` actor means machine-confirmed |
+  | `status` | `draft` for anything in `drafts/`, `stable` after approval, `deprecated` for removed code |
+  | `stale_after` | Optional, time-based: used for notes with a review date, not for code-driven staleness |
+
+  **Trust tiers are derived, never stored** (OKF rule): no `verified` → *unverified*; only non-human actors → *machine-confirmed*; any `human:` actor → *human-reviewed*. The MCP tools return the tier, so an agent knows how far to trust a doc, as the original plan required.
+- **Code-driven staleness is computed, not written.** The file stores `brain.built_from_hash` (below). The server compares it with the current code hash and reports `stale` in tools and views. Writing a stale marker into committed files on every code change would create constant diff noise.
+- **Reserved files:** `index.md` (progressive-disclosure listing, headed sections with bulleted links and one-line descriptions, generated by the server) and `log.md` (date-grouped entries, newest first: *Creation*, *Update*, *Deprecation*). The root `index.md` is the only index with front matter.
+- **Attested Computations (OKF §9) are not used.** The brain records no computed values.
+
+**Example concept** (`knowledge/files/src/auth/session.ts.md`):
+
+```markdown
+---
+type: Brain File
+title: src/auth/session.ts
+description: Session creation, lookup and expiry for authenticated users.
+resource: https://github.com/<org>/<repo>/blob/9f2c1e/src/auth/session.ts
+tags: [auth, session]
+generated: { by: brain-mcp/0.1.0, at: 2026-11-16T10:00:00+00:00 }
+verified: { by: human:jdoe, at: 2026-11-16T11:30:00+00:00 }
+status: stable
+sources:
+  - id: code
+    resource: https://github.com/<org>/<repo>/blob/9f2c1e/src/auth/session.ts
+    last_modified: 2026-11-14T08:12:00+00:00
+brain:                                  # everything brain-specific lives under one key
+  target: src/auth/session.ts
+  kind: file                            # symbol | file | module | architecture
+  built_from_hash: 9f2c1e…              # hash of the code this doc describes
+  part_of: /modules/src/auth.md
+  depends_on:                           # typed, from the code graph (§5.2)
+    - /files/src/db/pool.ts.md
+    - /files/src/crypto/token.ts.md
+  llm:                                  # see §4.3 (estimated in agent / vscode-lm modes)
+    model: claude-…
+    mode: api-key
+    tokens_in: 1840
+    tokens_out: 260
+    cost_usd: 0.0123
+    tokens_source: provider-reported    # or estimated
+---
+
+# Summary
+
+Creates and validates user sessions, backed by [the connection pool](/files/src/db/pool.ts.md)
+and signed with [token helpers](/files/src/crypto/token.ts.md).[^code]
+
+# SessionStore.get
+
+Looks up a session by id and rejects expired ones. Why sessions are stored server-side:
+[decision 0007](/notes/decisions/0007-session-storage.md).
+
+<!-- brain:auto:start dependencies -->
+# Dependencies
+
+- Depends on: [pool.ts](/files/src/db/pool.ts.md), [token.ts](/files/src/crypto/token.ts.md)
+- Used by: [login handler](/files/src/http/login.ts.md)
+<!-- brain:auto:end -->
+
+[^code]: src/auth/session.ts
+```
+
+The block between the `brain:auto` markers is rewritten by the server from the graph so the Markdown links always match `brain.depends_on`; text outside the markers is human-owned and never touched.
+
+### 5.2 Dependency graph
+
+The graph is the point of choosing OKF, so its construction is explicit.
+
+- **Nodes:** every concept in `knowledge/`, plus, optionally, the code symbols they describe.
+- **Edges, two kinds:**
+  1. **Untyped links:** every Markdown link in a concept body. These are the OKF edges, and they are what any other OKF tool sees.
+  2. **Typed edges:** `brain.part_of` and `brain.depends_on` (and `implements` / `extends` where the code graph has them), generated by the server from tree-sitter / LSP / SCIP edges (PLAN.md §4) and rolled up from symbols to files to modules: file A depends on file B if any symbol in A imports, calls or extends something in B.
+- **Provenance and confidence stay in the database, not in the files.** Each typed edge records how it was found (`treesitter`, `lsp`, `scip`, or `human-link`) and whether it is a name-match guess or resolved. Putting that in front matter would make every file noisy. The tools return it, and the JSON-LD export includes it.
+- **Direction:** `depends_on` is stored one way; "used by" is derived by the server from the reverse edges, so there is nothing to keep in sync by hand.
+- **Rebuild:** the graph is rebuilt from the Markdown in `knowledge/` plus the code index. Deleting `.cache/` loses nothing that is not recomputed.
+- **What it enables:** `get_neighbors`, `impact_of_change` (transitive reverse-dependency walk) and staleness propagation (a changed file marks the concepts that depend on it as *possibly affected*, not stale, because their own code did not change) all run on this graph.
+- **JSON-LD export (optional):** `graph/graph.jsonld` is a generated export for tools that want typed, linked data rather than Markdown. Nodes are `@id: brain:<concept-id>` with `@type` from the OKF `type`; edges are `brain:dependsOn`, `brain:partOf`, `brain:linksTo`, each with `source` and `confidence`. It is derived, so it is gitignored by default and is not a second source of truth.
+- **Checks the server runs (`brain validate`, and on every write):** OKF conformance (every non-reserved `.md` parses and has a non-empty `type`), and graph health: broken links (information), orphan concepts with no inbound link, dependency cycles between modules (warning), and `brain.depends_on` entries pointing at concepts that do not exist.
+
+### 5.3 Rules
+
+- **Everything under `knowledge/` and `config.json` is plain Markdown or JSON, human-readable, and the source of truth.** `.cache/` and `graph/` can be deleted at any time and rebuilt.
+- **Drafts vs reviewed.** The server writes every generated concept to `drafts/` first, with `status: draft` and no `verified`. **Approving in the extension moves it to `knowledge/`, sets `status: stable` and adds `verified: {by: human:<git user>, at}`.** "Generated, unreviewed" is a physical location, so a PR only contains reviewed docs. Links in drafts already point to the final `/…` bundle paths, so they do not change on approval. Regenerating a doc whose code changed writes a new draft and leaves the reviewed one in place (reported stale) until the new one is approved.
+- **The extension never writes into `knowledge/` itself.** Edits and approvals go through `brain_admin_review_summary`, so the server can update its tables, `index.md` and `log.md` and keep file and database consistent. The one exception is `knowledge/notes/`: **Brain: Add Note** can create a file there directly (with front matter `type: Brain Note`), and the server's file watcher picks it up and adds it to the graph.
+- **Obsidian and other readers.** `knowledge/` can be opened as an Obsidian vault as is, because OKF uses standard Markdown links. Obsidian's setting *Use [[Wikilinks]]* should be off and *New link format* set to "Absolute path in vault", so links the user adds match OKF. The brain does not generate wikilinks.
 - **Per-user data stays out of the repo.** Logs and the daemon lock file are in `.cache/`. The extension's own global state (last-used workspace, UI layout) lives in VS Code's `globalStorageUri`.
-- **Export for sharing.** `site/` is produced on demand (a CLI or `Brain: Export Docs Site` command) and is not committed by default.
+- **Export for sharing.** `site/` is produced on demand (`Brain: Export Docs Site`) and is not committed by default. Because the bundle is plain OKF, the `knowledge/` folder itself can also be shared as is, as an archive or a repo subdirectory.
 
 ---
 
@@ -335,9 +410,11 @@ Moving the file watcher and semantic analysis out of the extension has costs wor
   - Server: tree-sitter index for two languages, `search_code`, `get_symbol`, `.brain/` layout creation, status and coverage resources, progress notifications.
   - Extension: activation and lifecycle, Settings webview from the server schema, Brain tree view, status bar, Output Folder command, Copy MCP Config, `mcpServerDefinitionProviders` registration.
   - Usage level 1 (§4.4): log every MCP call by client and session, live status bar indicator, basic Agent Activity list. Cheap and gives the "did the agent call the brain" answer early.
-  - `llm_call` table and the model/tokens fields in doc front matter.
-- **Phase 2 — review, feedback and cost:** drafts → docs promotion, Review queue, CodeLens for stale docs, feedback storage and use in regeneration, coverage dashboard, HTTP daemon mode with token. Cost calculator: price table, pre-run estimate, budget cap, Cost & Models view, report export.
-- **Phase 3 — depth:** usage levels 2 and 3 (follow-up correlation, client hooks, per-session summary, estimated saving), Check Agent Connection, optional language-provider edge feeder, `vscode-lm` mode, docs site export, SCIP import.
+  - `llm_call` table and the `brain.llm` fields in concept front matter.
+  - OKF bundle: `knowledge/` layout, `index.md` (with `okf_version`), `log.md`, concept front matter, `brain validate` for OKF conformance.
+  - Graph: Markdown links and `brain.depends_on` from tree-sitter edges, `get_neighbors` and `impact_of_change` on it.
+- **Phase 2 — review, feedback and cost:** drafts → `knowledge/` promotion (sets `status`, `verified`), Review queue, CodeLens for stale docs, feedback storage and use in regeneration, coverage dashboard, Dependency Graph view and graph-health checks (§4.2), HTTP daemon mode with token. Cost calculator: price table, pre-run estimate, budget cap, Cost & Models view, report export.
+- **Phase 3 — depth:** usage levels 2 and 3 (follow-up correlation, client hooks, per-session summary, estimated saving), Check Agent Connection, optional language-provider edge feeder, `vscode-lm` mode, docs site export, JSON-LD graph export, SCIP import.
 - **Phase 4:** team features: shared config conventions, multi-root workspaces, CI integration.
 
 ---
@@ -345,6 +422,7 @@ Moving the file watcher and semantic analysis out of the extension has costs wor
 ## 11. Testing
 
 - **Protocol tests:** the server and extension are both tested against `brain-protocol` schemas, so drift fails the build.
+- **OKF and graph:** conformance tests on a fixture bundle (every concept parses and has `type`; reserved filenames respected; unknown keys survive a rewrite; a bare `verified` mapping reads as a one-element list), round-trip of the `brain:auto` block, trust-tier derivation, and graph tests (cycle detection, rollup from symbol edges to file edges, impact walk).
 - **Server:** unit and integration tests with fixture repos, no VS Code needed. This is where most tests live, because most logic lives here.
 - **Extension:** `@vscode/test-electron` smoke tests (activate, connect to a stub MCP server, render the tree), plus webview tests with the server stubbed.
 - **End-to-end:** a script that starts the daemon on a fixture repo, drives it through the extension's commands, and checks the files created under `.brain/`.
@@ -356,7 +434,10 @@ Moving the file watcher and semantic analysis out of the extension has costs wor
 
 - **Default transport:** HTTP daemon (recommended) vs per-client stdio. Check which target clients support HTTP MCP before fixing it.
 - **Admin-tool separation:** same server with a token-gated tool set (recommended) vs a second, extension-only endpoint.
-- **Drafts location:** physical `drafts/` folder (recommended) vs a status flag in one `docs/` folder. The folder is clearer in git but doubles the file layout.
+- **Drafts location:** physical `drafts/` folder (recommended) vs OKF `status: draft` in the same `knowledge/` folder. The folder keeps unreviewed text out of PRs but duplicates the layout.
+- **OKF maturity:** v0.2 is a Google Cloud draft and the spec has already had a breaking change (v0.1 → v0.2). Pin the version, keep brain data under the `brain:` key, and re-check the official spec (and its licence, which secondary sources report inconsistently) before Phase 1.
+- **Typed edges in front matter:** OKF links are untyped, so `brain.depends_on` / `part_of` are a brain extension. Decide whether to propose typed relations upstream or keep them private.
+- **Resource URIs for code:** permalink URL when a git remote exists (recommended, survives moves) vs a path relative to the concept file.
 - **Commit generated docs by default?** Recommended: commit only reviewed docs. Needs agreement from the team.
 - **Server distribution:** bundled with the VSIX (works offline, larger) vs installed on first run (smaller, needs network).
 - **Native SQLite packaging:** the server is a separate Node process, so native `better-sqlite3` is usable there, which removes the Electron ABI problem from PLAN.md §3.
