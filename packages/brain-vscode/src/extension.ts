@@ -4,6 +4,7 @@ import * as path from "node:path";
 import * as vscode from "vscode";
 import type { BrainStatus, PendingItem, UsageSummary } from "@app-brain/brain-protocol";
 import { BrainClient } from "./client";
+import { GraphPanel } from "./graphPanel";
 import { SettingsPanel } from "./settingsPanel";
 import { ActivityItem, ConnState, ReviewRow, activityItems, flashText, mcpConfigSnippet, reviewRows, statusBarText, validationReport, validationSummary } from "./format";
 
@@ -76,8 +77,19 @@ export async function activate(context: vscode.ExtensionContext) {
 
   let lastConn: ConnState = "connecting";
   let promptedInit = false;
+  let lastIndexedAt: string | null = null;
+  let lastDocs = "";
   const onState = (conn: ConnState, status: BrainStatus | null) => {
     lastConn = conn;
+    if (status && status.state === "idle") {
+      const docs = JSON.stringify(status.knowledge);
+      if (status.index.lastIndexedAt !== lastIndexedAt || docs !== lastDocs) {
+        const first = lastIndexedAt === null;
+        lastIndexedAt = status.index.lastIndexedAt;
+        lastDocs = docs;
+        if (!first) GraphPanel.refreshIfOpen();
+      }
+    }
     const view = statusBarText(conn, status);
     bar.text = view.text;
     bar.tooltip = view.tooltip;
@@ -177,6 +189,14 @@ export async function activate(context: vscode.ExtensionContext) {
     ),
     vscode.commands.registerCommand("brain.openSettings", () =>
       SettingsPanel.show(context.extensionUri, () => client, path.posix.join(cfg().get<string>("outputDir", ".brain"), "config.json")),
+    ),
+    vscode.commands.registerCommand("brain.showGraph", () => GraphPanel.show(context.extensionUri, () => client, folder.uri.fsPath)),
+    vscode.commands.registerCommand("brain.exportGraph", () =>
+      run("export graph", async () => {
+        const r = await client!.exportGraph();
+        const open = await vscode.window.showInformationMessage(`Graph exported: ${r.nodes} nodes, ${r.edges} dependencies (${r.file}).`, "Open");
+        if (open === "Open") await vscode.window.showTextDocument(vscode.Uri.file(path.join(folder.uri.fsPath, r.file)));
+      }),
     ),
     vscode.commands.registerCommand("brain.search", () => searchSymbols(() => client, folder.uri.fsPath)),
     vscode.commands.registerCommand("brain.openOutputFolder", () => {

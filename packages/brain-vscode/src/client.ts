@@ -7,6 +7,8 @@ import {
   BrainStatus,
   ENV_ADMIN_TOKEN,
   HelloResult,
+  Graph,
+  GraphLevel,
   InitResult,
   PROTOCOL_VERSION,
   PendingItem,
@@ -168,6 +170,16 @@ export class BrainClient {
   /** Rejects with a ToolError whose `details` is the list of field errors. */
   setConfig(config: Record<string, unknown>): Promise<Record<string, unknown>> {
     return this.call(AdminTools.setConfig, { config });
+  }
+
+  /** The dependency graph (an agent tool, so these calls are not counted as agent usage). */
+  getGraph(args: { level?: GraphLevel; root?: string | null; depth?: number; limit?: number } = {}): Promise<Graph> {
+    const { root, ...rest } = args;
+    return this.call<Graph>("get_graph", { ...rest, ...(root ? { root } : {}) });
+  }
+
+  exportGraph(): Promise<{ file: string; nodes: number; edges: number }> {
+    return this.call(AdminTools.exportGraph);
   }
 
   validate(): Promise<ValidationResult> {

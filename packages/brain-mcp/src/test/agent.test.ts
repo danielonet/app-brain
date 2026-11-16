@@ -158,7 +158,6 @@ describe("agent tools over a real index", () => {
     assert.equal(r.matches[0].kind, "method");
     assert.equal(r.matches[0].doc, "Look up a session by its id.");
     assert.equal(r.matches[0].doc_status, "none");
-    assert.equal(r.matches[0].summary, null);
 
     const plain = (await tool(c, AgentTools.getSymbol, { name: "find" })).body; // plain method name
     assert.equal(plain.matches[0].symbol, "UserRepo.find");

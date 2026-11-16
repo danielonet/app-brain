@@ -347,6 +347,24 @@ export class BrainStore {
     );
   }
 
+  /** Every parsed file, with import counts, for the dependency graph. */
+  graphFiles(): { path: string; lang: string; symbols: number; imported_by: number; imports: number }[] {
+    return this.all(
+      `SELECT f.path, f.lang,
+              (SELECT COUNT(*) FROM symbol s WHERE s.file_id = f.id) AS symbols,
+              (SELECT COUNT(*) FROM edge e WHERE e.dst_file = f.id) AS imported_by,
+              (SELECT COUNT(*) FROM edge e WHERE e.src_file = f.id) AS imports
+       FROM file f WHERE f.parsed = 1 ORDER BY f.path`,
+    );
+  }
+
+  allEdges(): EdgeRow[] {
+    return this.all<EdgeRow>(
+      `SELECT a.path AS "from", b.path AS "to", e.kind, e.source, e.confidence FROM edge e
+       JOIN file a ON a.id = e.src_file JOIN file b ON b.id = e.dst_file ORDER BY a.path, b.path`,
+    );
+  }
+
   fileHash(filePath: string): string | null {
     return this.get<{ content_hash: string | null }>("SELECT content_hash FROM file WHERE path = ?", filePath)?.content_hash ?? null;
   }

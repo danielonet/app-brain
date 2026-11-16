@@ -29,6 +29,8 @@ export const AgentTools = {
   impactOfChange: "impact_of_change",
   listUndocumented: "list_undocumented",
   saveSummary: "save_summary",
+  getOverview: "get_overview",
+  getGraph: "get_graph",
 } as const;
 
 export const SYMBOL_KINDS = ["function", "class", "method", "interface", "type", "enum", "variable"] as const;
@@ -43,6 +45,7 @@ export const AdminTools = {
   reindex: "brain_admin_reindex",
   reviewSummary: "brain_admin_review_summary",
   validate: "brain_admin_validate",
+  exportGraph: "brain_admin_export_graph",
 } as const;
 
 export const ENV_ADMIN_TOKEN = "BRAIN_ADMIN_TOKEN";
@@ -233,3 +236,50 @@ export const ReviewResultSchema = z.object({
   conceptPath: z.string(),
 });
 export type ReviewResult = z.infer<typeof ReviewResultSchema>;
+
+// ---------------------------------------------------------------------------
+// Dependency graph: PLAN-VSCODE-EXTENSION.md §5.2
+// ---------------------------------------------------------------------------
+
+export const DOC_STATUSES = ["none", "draft", "reviewed", "stale"] as const;
+export type DocStatus = (typeof DOC_STATUSES)[number];
+
+/** OKF trust tiers, derived from `verified` and never stored (OKF §4). */
+export const TRUST_TIERS = ["unverified", "machine-confirmed", "human-reviewed"] as const;
+export type TrustTier = (typeof TRUST_TIERS)[number];
+
+export const GRAPH_LEVELS = ["module", "file"] as const;
+export type GraphLevel = (typeof GRAPH_LEVELS)[number];
+
+export const GraphNodeSchema = z.object({
+  id: z.string().describe("File path, or directory for a module. `.` is the repo root."),
+  kind: z.enum(["file", "module"]),
+  files: z.number().int().describe("Source files in the node (1 for a file)."),
+  symbols: z.number().int(),
+  importedBy: z.number().int().describe("Files outside the node that import something in it."),
+  imports: z.number().int().describe("Files outside the node that it imports."),
+  language: z.string().nullable(),
+  doc: z.enum(DOC_STATUSES),
+  trust: z.enum(TRUST_TIERS).nullable(),
+});
+export type GraphNode = z.infer<typeof GraphNodeSchema>;
+
+export const GraphEdgeSchema = z.object({
+  from: z.string(),
+  to: z.string(),
+  weight: z.number().int().describe("Import links this edge stands for (1 at file level)."),
+  confidence: z.enum(["resolved", "guess"]),
+  cycle: z.boolean().describe("Both ends are in a circular dependency."),
+});
+export type GraphEdge = z.infer<typeof GraphEdgeSchema>;
+
+export const GraphSchema = z.object({
+  level: z.enum(GRAPH_LEVELS),
+  root: z.string().nullable(),
+  nodes: z.array(GraphNodeSchema),
+  edges: z.array(GraphEdgeSchema),
+  cycles: z.array(z.array(z.string())).describe("Circular dependencies among modules, whole repo."),
+  totals: z.object({ nodes: z.number().int(), edges: z.number().int() }),
+  truncated: z.boolean(),
+});
+export type Graph = z.infer<typeof GraphSchema>;

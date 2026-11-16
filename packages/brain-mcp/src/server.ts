@@ -1,4 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
+import { mkdir, writeFile } from "node:fs/promises";
+import * as path from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { SubscribeRequestSchema, UnsubscribeRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { zodToJsonSchema } from "zod-to-json-schema";
@@ -8,6 +10,7 @@ import {
   AgentTools,
   BrainStatus,
   DOC_KINDS,
+  GRAPH_LEVELS,
   ConfigSchema,
   HelloResult,
   PROTOCOL_VERSION,
@@ -16,6 +19,7 @@ import {
   SYMBOL_KINDS,
 } from "@app-brain/brain-protocol";
 import { Indexer } from "./indexer";
+import { buildGraph, toJsonLd } from "./okf/graph";
 import { Knowledge } from "./okf/knowledge";
 import { BrainStore, type SymbolHit } from "./store";
 import { watchWorkspace } from "./watcher";
@@ -197,22 +201,27 @@ export function createBrainServer(opts: BrainServerOptions) {
     AgentTools.getSymbol,
     "Details of one symbol: signature, location (path and line range), doc comment, and documentation status. Pass a qualified name like 'SessionStore.get' or a plain name; add path to disambiguate.",
     { name: z.string().min(1), path: z.string().optional().describe("Repo-relative file path, to disambiguate.") },
-    ({ name, path }) => {
+    async ({ name, path }) => {
       const hits = store.symbolsNamed(name, path);
       if (hits.length === 0) {
         const near = store.search(name, { limit: 5, offset: 0 }).hits.map((h) => `${h.qualified_name} (${h.path})`);
         return { found: false, did_you_mean: near, ...notReady() };
       }
+      const docs = await knowledge.docIndex();
       return {
         found: true,
-        matches: hits.map((h) => ({
-          ...brief(h),
-          doc: h.docstring, // full text here, not just the first sentence
-          body_hash: h.body_hash,
-          // No generated summaries yet (arrives with doc generation); say so instead of staying silent.
-          summary: null,
-          doc_status: "none",
-        })),
+        matches: hits.map((h) => {
+          const d = docs.get(`file:${h.path}`);
+          return {
+            ...brief(h),
+            doc: h.docstring, // full text here, not just the first sentence
+            body_hash: h.body_hash,
+            // Status of the file's reviewed documentation, so the agent knows how far to trust it
+            // and whether get_overview has more.
+            doc_status: d?.status ?? "none",
+            ...(d?.trust ? { doc_trust: d.trust } : {}),
+          };
+        }),
       };
     },
   );
@@ -307,6 +316,25 @@ export function createBrainServer(opts: BrainServerOptions) {
       });
       return { saved: true, status: "draft", draft: saved.draft, note: "Saved as an unreviewed draft. It appears in the knowledge base once a person approves it in VS Code." };
     },
+  );
+
+  agentTool(
+    AgentTools.getOverview,
+    "Reviewed documentation for a file or a directory (module), written by an agent and approved by a person: purpose, behaviour, dependencies. Reports its trust level and warns when the code changed after it was written. Use '.' for the repository overview if one exists.",
+    { path: z.string().min(1).describe("Repo-relative file or directory path, or '.'.") },
+    async ({ path }) => ({ ...(await knowledge.overview(path)), ...notReady() }),
+  );
+
+  agentTool(
+    AgentTools.getGraph,
+    "The dependency graph: modules (directories) or files as nodes, import relationships as edges, with circular dependencies flagged and each node's documentation status. Start at module level; pass root (a file or directory) and depth to zoom in.",
+    {
+      level: z.enum(GRAPH_LEVELS).default("module"),
+      root: z.string().optional().describe("A file or directory to centre on."),
+      depth: z.number().int().min(0).max(3).default(1).describe("Hops to expand beyond root."),
+      limit: z.number().int().min(5).max(400).default(150).describe("Most nodes returned; the most connected are kept."),
+    },
+    async ({ level, root, depth, limit }) => ({ ...buildGraph(store, await knowledge.docIndex(), { level, root, depth, limit }), ...notReady() }),
   );
 
   // ---- admin tools: refused until brain_admin_hello succeeds with the token ---
@@ -426,6 +454,18 @@ export function createBrainServer(opts: BrainServerOptions) {
     AdminTools.validate,
     { description: "Check the knowledge bundle: OKF conformance (every concept has a type) and graph health (broken links, orphans, dependency cycles)." },
     guarded(async () => json(await knowledge.validate())),
+  );
+
+  server.registerTool(
+    AdminTools.exportGraph,
+    { description: "Write the dependency graph as JSON-LD to <outputDir>/graph/graph.jsonld (derived, gitignored, deterministic)." },
+    guarded(async () => {
+      const doc = toJsonLd(store, await knowledge.docIndex());
+      const file = ws.abs("graph", "graph.jsonld");
+      await mkdir(path.dirname(file), { recursive: true });
+      await writeFile(file, JSON.stringify(doc, null, 2) + "\n");
+      return json({ file: path.relative(ws.root, file).split(path.sep).join("/"), nodes: (doc["@graph"] as { type: string }[]).filter((n) => n.type !== "Dependency").length, edges: (doc["@graph"] as { type: string }[]).filter((n) => n.type === "Dependency").length });
+    }),
   );
 
   let watcher: { close(): void } | null = null;

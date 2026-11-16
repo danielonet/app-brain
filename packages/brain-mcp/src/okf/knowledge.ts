@@ -2,8 +2,9 @@ import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
 import {
-  Coverage, DocKind, PendingItem, ReviewResult, ValidationIssue, ValidationResult,
+  Coverage, DocKind, DocStatus, PendingItem, ReviewResult, TrustTier, ValidationIssue, ValidationResult,
 } from "@app-brain/brain-protocol";
+import type { DocIndex } from "./graph";
 import type { BrainStore } from "../store";
 import type { BrainWorkspace } from "../workspace";
 import { Bundle, ConceptFile } from "./bundle";
@@ -29,6 +30,19 @@ interface State {
   reviewed?: ConceptFile;
   draft?: ConceptFile;
   hash: string;
+}
+
+/**
+ * OKF trust tier, derived from `verified` and never stored (OKF §4): no `verified` is unverified;
+ * only non-human actors is machine-confirmed; any `human:` actor is human-reviewed. `verified`
+ * may be a single mapping or a list.
+ */
+export function trustTier(fm: FrontMatter): TrustTier {
+  const v = fm.verified;
+  const entries = Array.isArray(v) ? v : v && typeof v === "object" ? [v] : [];
+  const actors = entries.map((e) => (e as { by?: unknown }).by).filter((b): b is string => typeof b === "string" && b.length > 0);
+  if (actors.length === 0) return "unverified";
+  return actors.some((a) => a.startsWith("human:")) ? "human-reviewed" : "machine-confirmed";
 }
 
 const sha1 = (s: string) => createHash("sha1").update(s).digest("hex").slice(0, 16);
@@ -126,6 +140,67 @@ export class Knowledge {
   private static builtFrom(c?: ConceptFile): string | undefined {
     const h = c ? getPath(c.fm, "brain.built_from_hash") : undefined;
     return typeof h === "string" ? h : undefined;
+  }
+
+  /** Doc status and trust tier for every documentable file and module, for the graph and for agents. */
+  async docIndex(): Promise<DocIndex> {
+    const { states, targets } = await this.states();
+    const index: DocIndex = new Map();
+    for (const t of targets) {
+      const s = states.get(`${t.kind}:${t.target}`)!;
+      let status: DocStatus = "none";
+      let trust: TrustTier | null = null;
+      if (s.reviewed) {
+        status = Knowledge.builtFrom(s.reviewed) === s.hash ? "reviewed" : "stale";
+        trust = trustTier(s.reviewed.fm);
+      } else if (s.draft) {
+        status = "draft";
+      }
+      index.set(`${t.kind}:${t.target}`, { status, trust });
+    }
+    return index;
+  }
+
+  /**
+   * The reviewed documentation for a file or module, as served to agents. Drafts are never
+   * served: only text a person approved, flagged stale when the code has changed since.
+   */
+  async overview(rawTarget: string): Promise<Record<string, unknown>> {
+    const target = cleanTarget(rawTarget);
+    const { states, targets } = await this.states();
+    if (target === ".") {
+      // The repo root: a person-approved architecture overview takes precedence over the root module's doc.
+      const arch = (await this.bundle.exists("knowledge", "architecture.md")) ? await this.bundle.read("knowledge", "architecture.md") : null;
+      if (arch && "fm" in arch) return this.shape(target, "module", arch, true);
+    }
+    const hit = targets.find((x) => x.target === target);
+    if (!hit) {
+      return { target, documented: false, reason: "Nothing documentable at this path (use a source file, or a directory with at least two source files)." };
+    }
+    const s = states.get(`${hit.kind}:${target}`)!;
+    if (!s.reviewed) {
+      return {
+        target, kind: hit.kind, documented: false, draft_pending: Boolean(s.draft),
+        hint: "No reviewed documentation yet. Use get_symbol or search_code, or write one with save_summary for a person to review.",
+      };
+    }
+    return this.shape(target, hit.kind, s.reviewed, Knowledge.builtFrom(s.reviewed) === s.hash);
+  }
+
+  private shape(target: string, kind: DocKind, c: ConceptFile, fresh: boolean): Record<string, unknown> {
+    const MAX = 6000;
+    const verified = c.fm.verified;
+    const last = (Array.isArray(verified) ? verified.at(-1) : verified) as { by?: string; at?: string } | undefined;
+    return {
+      target, kind, documented: true,
+      status: fresh ? "reviewed" : "stale",
+      trust: trustTier(c.fm),
+      ...(fresh ? {} : { warning: "The code changed after this was written. Treat it as possibly out of date and check the source." }),
+      description: isNonEmptyString(c.fm.description) ? c.fm.description : null,
+      reviewed_by: last?.by ?? null,
+      reviewed_at: last?.at ?? null,
+      doc: c.body.length > MAX ? c.body.slice(0, MAX) + "\n…(truncated)" : c.body,
+    };
   }
 
   async coverage(): Promise<Coverage> {
