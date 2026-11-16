@@ -80,6 +80,16 @@
           "default": "",
           "markdownDescription": "Path to the `brain-mcp` entry point (`cli.js`). Empty uses the bundled server."
         },
+        "brain.server.transport": {
+          "type": "string",
+          "enum": ["http", "stdio"],
+          "default": "http",
+          "enumDescriptions": [
+            "One shared server per workspace on 127.0.0.1, used by this editor and by agents (Claude Code, Cursor) through their usual stdio config. The index is built once, and you see what agents ask live.",
+            "A private server for this window only. Agents that run their own server index the code separately."
+          ],
+          "markdownDescription": "How this editor reaches the brain server. If the shared server cannot start, the editor falls back to a private one and says so."
+        },
         "brain.server.nodePath": {
           "type": "string",
           "default": "node",

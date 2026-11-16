@@ -35,6 +35,7 @@ export function statusBarText(conn: ConnState, status: BrainStatus | null): { te
     tooltip:
       `Brain ${status.serverVersion}\n${sym} symbols, ${status.index.edges} import links\n` +
       `Docs: ${k.reviewed} reviewed, ${k.drafts} awaiting review, ${k.stale} stale\n` +
+      serverLine(status) +
       (status.llm.mode === "agent" ? "" : `Doc generation: ${status.llm.ready ? `ready (${status.llm.mode}, ${status.llm.model ?? "default model"})` : `not ready. ${status.llm.problem ?? ""}`}\n`) +
       (status.cost.calls > 0 ? `LLM spend: ${spend(status.cost.spendUsd)}${status.cost.complete ? "" : " or more (some calls could not be priced)"} over ${status.cost.calls} call${status.cost.calls === 1 ? "" : "s"}\n` : "") +
       `Output: ${status.outputDir}${langs ? `\n${langs}` : ""}`,
@@ -43,6 +44,13 @@ export function statusBarText(conn: ConnState, status: BrainStatus | null): { te
 }
 
 const spend = (n: number) => (n === 0 ? "$0.00" : n < 0.01 ? "<$0.01" : `$${n.toFixed(2)}`);
+
+/** Which server this is, and who else is using it: the shared daemon is the point of having one. */
+export function serverLine(status: BrainStatus): string {
+  const others = status.server.clients.filter((c) => !(c.admin && c.name === "brain-vscode"));
+  const who = others.length ? ` Also connected: ${[...new Set(others.map((c) => c.name ?? "unknown"))].join(", ")}.` : "";
+  return status.server.transport === "http" ? `Server: shared (pid ${status.server.pid}).${who}\n` : `Server: private to this window (pid ${status.server.pid}).\n`;
+}
 
 /** Snippet for `.mcp.json` (Claude Code, Cursor). No admin token: agents get the read-only tools. */
 export function mcpConfigSnippet(serverPath: string, workspace: string, outputDir: string): string {

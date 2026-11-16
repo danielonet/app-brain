@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport, getDefaultEnvironment } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { CreateMessageRequestSchema, ResourceUpdatedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
 import {
   AdminTools,
@@ -24,7 +25,16 @@ import {
 } from "@app-brain/brain-protocol";
 import type { ConnState } from "./format";
 
+/** How to reach the server: spawn a private one, or join the shared daemon. */
+export type TransportSpec = { kind: "stdio" } | { kind: "http"; url: string; agentToken: string };
+
 export interface BrainClientOptions {
+  /** Decides, at every (re)connect, how to reach the server. Default: a private stdio server. */
+  transport?: () => Promise<TransportSpec>;
+  /** The token that unlocks admin tools. Over stdio a fresh one is made per process; for the daemon it must be the one it was given. */
+  adminToken?: string;
+  /** The daemon refused our admin token (it was started by something else). Return true once that is fixed, to retry. */
+  onAdminRefused?: () => Promise<boolean>;
   nodePath: string;
   serverPath: string;
   workspace: string;
@@ -44,6 +54,8 @@ export interface BrainClientOptions {
 }
 
 /** A tool call the server answered with an error. `details` carries field errors for set_config. */
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
 export class ToolError extends Error {
   constructor(message: string, readonly details?: unknown) {
     super(message);
@@ -68,9 +80,24 @@ export class BrainClient {
   private status: BrainStatus | null = null;
   private stopping = false;
   private restarts = 0;
-  private readonly token = randomUUID();
+  private readonly token: string;
+  private adminRetried = false;
+  private transportKind: "stdio" | "http" = "stdio";
+  private watchdog: NodeJS.Timeout | undefined;
 
-  constructor(private readonly opts: BrainClientOptions) {}
+  constructor(private readonly opts: BrainClientOptions) {
+    this.token = opts.adminToken ?? randomUUID();
+  }
+
+  /** Awaits nothing: logs a failure instead of leaving an unhandled rejection. */
+  private quietly(p: Promise<unknown>) {
+    p.catch((e: Error) => this.opts.log(`refresh failed: ${e.message}`));
+  }
+
+  /** Whether we are talking to the shared daemon. */
+  get shared(): boolean {
+    return this.transportKind === "http";
+  }
 
   get current(): BrainStatus | null {
     return this.status;
@@ -80,36 +107,52 @@ export class BrainClient {
     this.stopping = false;
     this.opts.onState("connecting", null);
     try {
-      const transport = new StdioClientTransport({
-        command: this.opts.nodePath,
-        args: [this.opts.serverPath, "--workspace", this.opts.workspace, "--output-dir", this.opts.outputDir],
-        env: { ...getDefaultEnvironment(), ...(this.opts.env ?? {}), [ENV_ADMIN_TOKEN]: this.token },
-        stderr: "pipe",
-      });
+      const spec: TransportSpec = this.opts.transport ? await this.opts.transport() : { kind: "stdio" };
+      this.transportKind = spec.kind;
+      const transport =
+        spec.kind === "http"
+          ? new StreamableHTTPClientTransport(new URL(spec.url), { requestInit: { headers: { authorization: `Bearer ${spec.agentToken}` } } })
+          : new StdioClientTransport({
+              command: this.opts.nodePath,
+              args: [this.opts.serverPath, "--workspace", this.opts.workspace, "--output-dir", this.opts.outputDir, "--no-proxy"],
+              env: { ...getDefaultEnvironment(), ...(this.opts.env ?? {}), [ENV_ADMIN_TOKEN]: this.token },
+              stderr: "pipe",
+            });
       const client = new Client({ name: "brain-vscode", version: "0.0.0" }, this.opts.sample ? { capabilities: { sampling: {} } } : undefined);
       if (this.opts.sample) {
         const sample = this.opts.sample;
         client.setRequestHandler(CreateMessageRequestSchema, async (req, extra) => (await sample(req.params, extra.signal)) as never);
       }
-      transport.stderr?.on("data", (b: Buffer) => this.opts.log(b.toString().trimEnd()));
-      client.onclose = () => void this.onClosed(client);
+      if (transport instanceof StdioClientTransport) transport.stderr?.on("data", (b: Buffer) => this.opts.log(b.toString().trimEnd()));
+      client.onclose = () => this.quietly(this.onClosed(client));
       client.onerror = (e) => this.opts.log(`client error: ${e.message}`);
       client.setNotificationHandler(ResourceUpdatedNotificationSchema, (n) => {
-        if (n.params.uri === Resources.status) void this.refresh();
-        else if (n.params.uri === Resources.usage) void this.refreshUsage();
-        else if (n.params.uri === Resources.pendingReview) void this.refreshPending();
+        // Refreshes are fire-and-forget. If the connection closes under one, that is not an error worth surfacing.
+        if (n.params.uri === Resources.status) this.quietly(this.refresh());
+        else if (n.params.uri === Resources.usage) this.quietly(this.refreshUsage());
+        else if (n.params.uri === Resources.pendingReview) this.quietly(this.refreshPending());
         else if (n.params.uri === Resources.costSummary) this.opts.onCost?.();
-        else if (n.params.uri === Resources.generation) void this.refreshGeneration();
+        else if (n.params.uri === Resources.generation) this.quietly(this.refreshGeneration());
       });
       await client.connect(transport);
       this.client = client;
+      if (spec.kind === "http") this.watch(spec, client);
 
       const hello = await this.call<HelloResult>(AdminTools.hello, {
         adminToken: this.token,
         client: "brain-vscode",
         protocolVersion: PROTOCOL_VERSION,
       });
-      if (!hello.admin) throw new Error("Server refused the admin handshake.");
+      if (!hello.admin) {
+        // A shared daemon started by something else (a terminal, another tool) does not know our admin token.
+        if (spec.kind === "http" && this.opts.onAdminRefused && !this.adminRetried) {
+          this.adminRetried = true;
+          await this.teardown();
+          if (await this.opts.onAdminRefused()) return this.start();
+        }
+        throw new Error(spec.kind === "http" ? "The shared server refused this editor's admin credentials." : "Server refused the admin handshake.");
+      }
+      this.adminRetried = false;
       await client.subscribeResource({ uri: Resources.status });
       await client.subscribeResource({ uri: Resources.usage });
       await client.subscribeResource({ uri: Resources.pendingReview });
@@ -126,18 +169,57 @@ export class BrainClient {
     }
   }
 
-  async stop(): Promise<void> {
+  /**
+   * Disconnects. With `shutdownIfAlone`, also stops the shared daemon when nobody else is connected to it; if agents or
+   * another window are using it, it is left running for them.
+   */
+  async stop(opts: { shutdownIfAlone?: boolean } = {}): Promise<void> {
     this.stopping = true;
+    if (opts.shutdownIfAlone && this.shared && this.client) {
+      try {
+        await this.refresh();
+        if ((this.status?.server.clients.length ?? 1) <= 1) await this.call(AdminTools.shutdown);
+      } catch (e) {
+        this.opts.log(`could not stop the daemon: ${(e as Error).message}`);
+      }
+    }
     await this.teardown();
     this.status = null;
     this.opts.onState("disconnected", null);
   }
 
+  /**
+   * The HTTP stream retries quietly when the daemon dies, so nothing reports a closed connection. Ask the daemon
+   * directly; two misses in a row is a dead daemon, and we reconnect (which starts a new one if need be).
+   */
+  private watch(spec: Extract<TransportSpec, { kind: "http" }>, client: Client) {
+    let misses = 0;
+    const health = new URL("/health", spec.url);
+    this.watchdog = setInterval(() => {
+      void fetch(health, { headers: { authorization: `Bearer ${spec.agentToken}` }, signal: AbortSignal.timeout(1000) })
+        .then((r) => r.ok)
+        .catch(() => false)
+        .then((ok) => {
+          misses = ok ? 0 : misses + 1;
+          if (misses >= 2) {
+            if (this.watchdog) clearInterval(this.watchdog);
+            this.quietly(this.onClosed(client));
+          }
+        });
+    }, 2000);
+    this.watchdog.unref?.();
+  }
+
   private async teardown() {
+    if (this.watchdog) clearInterval(this.watchdog);
+    this.watchdog = undefined;
     const c = this.client;
     this.client = null;
     if (c) {
       c.onclose = undefined;
+      // The protocol's goodbye: the daemon drops our session now instead of waiting to notice we are gone.
+      const t = (c as unknown as { transport?: { terminateSession?: () => Promise<void> } }).transport;
+      if (this.transportKind === "http") await Promise.race([t?.terminateSession?.().catch(() => {}), sleep(1500)]);
       await c.close().catch(() => {});
     }
   }
@@ -145,6 +227,9 @@ export class BrainClient {
   /** Restart with backoff, three tries, then surface an error (plan §6 step 6). */
   private async onClosed(closed: Client) {
     if (this.stopping || this.client !== closed) return;
+    closed.onclose = undefined;
+    void closed.close().catch(() => {}); // stop its retry loop
+    if (this.watchdog) clearInterval(this.watchdog);
     this.client = null;
     this.status = null;
     if (this.restarts >= 3) {

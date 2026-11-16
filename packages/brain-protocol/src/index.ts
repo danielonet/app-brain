@@ -49,6 +49,7 @@ export const AdminTools = {
   validate: "brain_admin_validate",
   exportGraph: "brain_admin_export_graph",
   exportCostReport: "brain_admin_export_cost_report",
+  shutdown: "brain_admin_shutdown",
   estimateGeneration: "brain_admin_estimate_generation",
   generateDocs: "brain_admin_generate_docs",
   cancelGeneration: "brain_admin_cancel_generation",
@@ -141,6 +142,11 @@ export const StatusSchema = z.object({
     reviewed: z.number().int().nonnegative(),
     drafts: z.number().int().nonnegative(),
     stale: z.number().int().nonnegative(),
+  }),
+  server: z.object({
+    pid: z.number().int(),
+    transport: z.enum(["stdio", "http"]),
+    clients: z.array(z.object({ name: z.string().nullable(), admin: z.boolean() })).describe("Everyone connected right now."),
   }),
   llm: z.object({
     mode: z.enum(LLM_MODES),
@@ -436,3 +442,5 @@ export const GenerationStateSchema = z.object({
   })).describe("The most recent results, newest last."),
 });
 export type GenerationState = z.infer<typeof GenerationStateSchema>;
+
+export * from "./daemon";

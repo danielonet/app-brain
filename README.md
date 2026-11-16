@@ -27,6 +27,13 @@ Generate application context out of a code base: a knowledge base an AI agent ca
 
 **Cost.** Every `save_summary` is recorded with the model, token counts and where they came from (reported by the agent, or estimated). A call made before its model had a price is priced from today's table, but only when both token counts are known; otherwise the report says the total is a lower bound and why. The budget cap stops the server's own generation before it would go over; it cannot stop an agent that calls `save_summary` on its own.
 
+**One shared server.** By default (`brain.server.transport`: `http`) the extension starts one `brain-mcp` daemon per workspace on `127.0.0.1` and every client uses it: the extension, and any agent whose usual stdio config (`node packages/brain-mcp/out/cli.js --workspace …`, see **Brain: Copy MCP Config**) quietly becomes a proxy to it. The code is indexed once, and the extension shows what agents ask as it happens. Details and the security model are in [PLAN-VSCODE-EXTENSION.md](PLAN-VSCODE-EXTENSION.md) §2 and §8. In short:
+
+- It listens on loopback only, needs a bearer token, and rejects browser requests and unexpected `Host` headers.
+- `server.json` (with the *agent* token, read-only tools) is in a per-user runtime directory, not in your workspace. The *admin* token and any API key are never in a file, the environment or the command line: they are passed on stdin and kept in memory, so an agent cannot approve its own drafts by reading a file.
+- It stops when the editor closes if the editor was its only client, leaves itself running for agents or another window otherwise, and exits after ten minutes with nobody connected. If it cannot start, the editor uses a private server and says so.
+- Run it yourself with `node packages/brain-mcp/out/cli.js --daemon --workspace .`; `--no-proxy` makes a stdio server run on its own even when a daemon exists.
+
 **Server-side generation.** **Brain: Generate Docs** lets the server write the drafts itself instead of waiting for an agent. Choose who writes them in the `brain.llm.*` settings (the default, `agent`, does nothing):
 
 | Mode | Who writes | Tokens and cost | Leaves your machine |

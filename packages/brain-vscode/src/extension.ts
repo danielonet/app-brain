@@ -1,14 +1,16 @@
 import { execFile } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as vscode from "vscode";
-import type { BrainStatus, GenerationScope, GenerationState, PendingItem, UsageSummary } from "@app-brain/brain-protocol";
+import { readDaemonInfo, runtimeDir, workspaceKey, type BrainStatus, type GenerationScope, type GenerationState, type PendingItem, type UsageSummary } from "@app-brain/brain-protocol";
 import { BrainClient } from "./client";
 import { CostPanel } from "./costPanel";
 import { GraphPanel } from "./graphPanel";
 import { SettingsPanel } from "./settingsPanel";
 import { ActivityItem, ConnState, ReviewRow, activityItems, estimateDetail, estimateTitle, flashText, generationBarText, generationProblems, generationProgress, generationSummary, mcpConfigSnippet, reviewRows, statusBarText, validationReport, validationSummary } from "./format";
-import { llmEnv, validateApiKey } from "./llmEnv";
+import { daemonLlm, llmEnv, validateApiKey } from "./llmEnv";
+import { ensureDaemon, stopDaemon } from "./daemonManager";
 import { sampleWithEditorModel } from "./lmBridge";
 
 let client: BrainClient | undefined;
@@ -127,11 +129,49 @@ export async function activate(context: vscode.ExtensionContext) {
   };
   const progressWatchers = new Set<(g: GenerationState) => void>();
 
+  /** One admin token per workspace, kept in secret storage: it is never written to a file an agent could read. */
+  const getAdminToken = async () => {
+    const k = `brain.admin.${workspaceKey(folder.uri.fsPath)}`;
+    let t = await context.secrets.get(k);
+    if (!t) {
+      t = randomBytes(32).toString("base64url");
+      await context.secrets.store(k, t);
+    }
+    return t;
+  };
+
   const make = async () => {
     const settings = llmSettings();
     // The key lives in VS Code's secret storage. An ANTHROPIC_API_KEY in the environment is a fallback for api-key mode only.
     const key = (await context.secrets.get(API_KEY)) ?? (settings.mode === "api-key" ? process.env.ANTHROPIC_API_KEY : undefined);
+    const adminToken = await getAdminToken();
+    const useDaemon = cfg().get<string>("server.transport", "http") === "http";
     return new BrainClient({
+      adminToken,
+      // The shared daemon by default. If it cannot start, a private server keeps the extension working, and we say why.
+      transport: useDaemon
+        ? async () => {
+            try {
+              const h = await ensureDaemon({
+                nodePath: cfg().get<string>("server.nodePath", "node"), serverPath: resolveServerPath(), workspace: folder.uri.fsPath,
+                outputDir: cfg().get<string>("outputDir", ".brain"), adminToken, llm: daemonLlm(settings, key), log: (l) => out.appendLine(l),
+              });
+              return { kind: "http" as const, url: h.info.url, agentToken: h.info.agentToken };
+            } catch (e) {
+              out.appendLine(`shared server unavailable: ${(e as Error).message}`);
+              void vscode.window.showWarningMessage(`Brain: could not start the shared server, so this window uses a private one. ${(e as Error).message.split("\n")[0]}`);
+              return { kind: "stdio" as const };
+            }
+          }
+        : undefined,
+      onAdminRefused: async () => {
+        // A daemon started by something else does not know this editor's admin token: replace it.
+        const info = await readDaemonInfo(runtimeDir(folder.uri.fsPath));
+        if (!info) return false;
+        out.appendLine("the running server was started without this editor's credentials; restarting it");
+        await stopDaemon(info, undefined, (l) => out.appendLine(l));
+        return true;
+      },
       env: llmEnv(settings, key),
       sample: settings.mode === "vscode-lm" ? (params, signal) => sampleWithEditorModel(params, signal) : undefined,
       onGeneration,
@@ -236,7 +276,7 @@ export async function activate(context: vscode.ExtensionContext) {
   };
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((e) => {
-      if (e.affectsConfiguration("brain.llm")) void restart().catch((err) => out.appendLine(`restart failed: ${(err as Error).message}`));
+      if (e.affectsConfiguration("brain.llm") || e.affectsConfiguration("brain.server.transport")) void restart().catch((err) => out.appendLine(`restart failed: ${(err as Error).message}`));
     }),
   );
 
@@ -246,7 +286,7 @@ export async function activate(context: vscode.ExtensionContext) {
         await restart();
       }),
     ),
-    vscode.commands.registerCommand("brain.stop", () => client?.stop()),
+    vscode.commands.registerCommand("brain.stop", () => client?.stop({ shutdownIfAlone: true })),
     vscode.commands.registerCommand("brain.initialise", () =>
       run("initialise", async () => {
         const r = await client!.initialise();
@@ -450,5 +490,6 @@ async function searchSymbols(getClient: () => BrainClient | undefined, root: str
 }
 
 export async function deactivate() {
-  await client?.stop();
+  // Leave the shared server running if agents or another window are using it; stop it if we were its only client.
+  await client?.stop({ shutdownIfAlone: true });
 }

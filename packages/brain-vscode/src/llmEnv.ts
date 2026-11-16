@@ -1,3 +1,4 @@
+import type { DaemonLlm } from "./daemonManager";
 import { ENV_LLM_API_KEY, ENV_LLM_BASE_URL, ENV_LLM_EFFORT, ENV_LLM_MODE, ENV_LLM_MODEL, LLM_MODES } from "@app-brain/brain-protocol";
 
 /** Pure (no `vscode` import) so the rules about what reaches the server are tested. */
@@ -37,4 +38,16 @@ export function validateApiKey(input: string): string | undefined {
   if (/\s/.test(k)) return "A key has no spaces or line breaks. Paste it again without any.";
   if (k.length > 512) return "That is too long to be an API key.";
   return undefined;
+}
+
+/**
+ * The same settings in the shape the daemon is started with (and fingerprinted by). Built from `llmEnv`, so the rules about
+ * which mode may carry a key and an effort hold for both, and a fingerprint can never disagree with what was applied.
+ */
+export function daemonLlm(s: LlmSettings, apiKey: string | undefined): DaemonLlm {
+  const env = llmEnv(s, apiKey);
+  return {
+    mode: env[ENV_LLM_MODE] ?? "agent", model: env[ENV_LLM_MODEL] ?? "", baseUrl: env[ENV_LLM_BASE_URL] ?? "",
+    effort: env[ENV_LLM_EFFORT] ?? "", apiKey: env[ENV_LLM_API_KEY] ?? "",
+  };
 }

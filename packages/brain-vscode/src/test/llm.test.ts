@@ -66,6 +66,11 @@ describe("the settings offered to the user", () => {
     assert.equal(props["brain.llm.model"].default, "");
     assert.equal(props["brain.llm.baseUrl"].default, "");
   });
+  it("defaults to the shared server and offers the private one as the alternative", () => {
+    assert.equal(props["brain.server.transport"].default, "http");
+    assert.deepEqual(props["brain.server.transport"].enum, ["http", "stdio"]);
+    assert.equal(props["brain.server.transport"].enumDescriptions.length, 2);
+  });
   it("offers only efforts the server accepts", () => {
     assert.deepEqual(props["brain.llm.effort"].enum, ["", "low", "medium", "high", "xhigh", "max"]);
   });
@@ -146,7 +151,7 @@ describe("what the person is told", () => {
     assert.deepEqual(generationProblems(job({ results: [r("drafted", "a.ts", null), r("refused", "b.ts", "declined"), r("error", "c.ts", "timed out")] })), ["REFUSED   b.ts: declined", "ERROR     c.ts: timed out"]);
   });
   it("shows in the status tooltip whether the server can write docs, and why not", () => {
-    const base = { state: "idle", initialised: true, workspace: "/w", outputDir: "/w/.brain", serverVersion: "0", protocolVersion: "0.2", startedAt: "", knowledge: { reviewed: 0, drafts: 0, stale: 0 }, cost: { calls: 0, spendUsd: 0, complete: true }, index: { files: 1, symbols: 1, edges: 0, byLanguage: {}, lastIndexedAt: null }, message: null } as const;
+    const base = { server: { pid: 1, transport: "stdio", clients: [] }, state: "idle", initialised: true, workspace: "/w", outputDir: "/w/.brain", serverVersion: "0", protocolVersion: "0.2", startedAt: "", knowledge: { reviewed: 0, drafts: 0, stale: 0 }, cost: { calls: 0, spendUsd: 0, complete: true }, index: { files: 1, symbols: 1, edges: 0, byLanguage: {}, lastIndexedAt: null }, message: null } as const;
     const tip = (llm: any) => statusBarText("connected", { ...base, llm } as never).tooltip;
     assert.ok(!tip({ mode: "agent", model: null, ready: false, problem: "off" }).includes("Doc generation"), "quiet when it is off");
     assert.match(tip({ mode: "api-key", model: "claude-opus-5-5", ready: true, problem: null }), /Doc generation: ready \(api-key, claude-opus-5-5\)/);

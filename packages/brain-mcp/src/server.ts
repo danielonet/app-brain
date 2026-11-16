@@ -1,6 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import * as path from "node:path";
+import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { SubscribeRequestSchema, UnsubscribeRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { zodToJsonSchema } from "zod-to-json-schema";
@@ -23,6 +24,7 @@ import { Indexer } from "./indexer";
 import { summarize, toCsv, toMarkdown } from "./cost";
 import { Generator } from "./generate/generator";
 import { llmFromEnv } from "./llm/factory";
+import { SamplingProvider } from "./llm/sampling";
 import { buildGraph, toJsonLd } from "./okf/graph";
 import { Knowledge } from "./okf/knowledge";
 import { BrainStore, type SymbolHit } from "./store";
@@ -35,7 +37,24 @@ export const SERVER_VERSION = "0.1.0";
 const OWN_CLIENT = "brain-vscode";
 const USAGE_RETENTION_DAYS = 30;
 
+/** What the core knows about one connected client. */
+export interface SessionHandle {
+  server: McpServer;
+  subscribed: Set<string>;
+  admin: () => boolean;
+  connectedAt: number;
+}
+
+/** Stands in for "nobody who can answer prompts is connected". */
+const NO_CLIENT = { getClientCapabilities: () => undefined } as unknown as Server;
+
 export interface BrainServerOptions {
+  /** How clients reach this server, for status. Default "stdio". */
+  transport?: "stdio" | "http";
+  /** Set by the daemon: lets an admin client stop it. */
+  onShutdown?: () => void;
+  /** The daemon watches this for its idle timeout. */
+  onSessionsChanged?: (count: number) => void;
   workspace: BrainWorkspace;
   /** Token a client must present in brain_admin_hello to use admin tools. Unset: admin tools are refused. */
   adminToken?: string;
@@ -79,13 +98,12 @@ const brief = (h: SymbolHit) => ({
   exported: Boolean(h.exported),
 });
 
-export function createBrainServer(opts: BrainServerOptions) {
+export function createBrainCore(opts: BrainServerOptions) {
   const ws = opts.workspace;
   const log = opts.log ?? (() => {});
   const startedAt = new Date().toISOString();
-  const server = new McpServer({ name: "brain-mcp", version: SERVER_VERSION });
-  const subscribed = new Set<string>();
-  let admin = false; // one stdio connection = one client = one session
+  /** Everyone connected. One per stdio process; one per HTTP session in the daemon. All share this core. */
+  const sessions = new Set<SessionHandle>();
 
   const diskPath = ws.abs(".cache", "brain.db");
   // Before `init` nothing is written to the workspace: the index lives in memory.
@@ -105,7 +123,12 @@ export function createBrainServer(opts: BrainServerOptions) {
   );
 
   const env = opts.env ?? process.env;
-  const llm = () => llmFromEnv(env, server.server);
+  const llm = () => llmFromEnv(env, samplingHost());
+  /** The connected client that can run prompts for us: an admin one (the extension) first. */
+  function samplingHost(): Server {
+    const candidates = [...sessions].filter((s) => SamplingProvider.available(s.server.server)).sort((a, b) => Number(b.admin()) - Number(a.admin()));
+    return (candidates[0] ?? [...sessions][0])?.server.server ?? NO_CLIENT;
+  }
   const generator = new Generator({
     ws,
     store: () => store,
@@ -139,6 +162,11 @@ export function createBrainServer(opts: BrainServerOptions) {
       serverVersion: SERVER_VERSION,
       protocolVersion: PROTOCOL_VERSION,
       startedAt,
+      server: {
+        pid: process.pid,
+        transport: opts.transport ?? "stdio",
+        clients: [...sessions].map((s) => ({ name: s.server.server.getClientVersion()?.name ?? null, admin: s.admin() })),
+      },
       index: { files: c.files, symbols: c.symbols, edges: c.edges, byLanguage: c.byLanguage, lastIndexedAt: c.lastIndexedAt },
       knowledge: await knowledge.counts(),
       llm: (({ mode, model, provider, problem }) => ({ mode, model, ready: provider !== null, problem }))(llm()),
@@ -148,7 +176,7 @@ export function createBrainServer(opts: BrainServerOptions) {
   }
 
   function notify(uri: string) {
-    if (subscribed.has(uri)) void server.server.sendResourceUpdated({ uri }).catch(() => {});
+    for (const s of sessions) if (s.subscribed.has(uri)) void s.server.server.sendResourceUpdated({ uri }).catch(() => {});
   }
   function setState(patch: Partial<typeof state>) {
     Object.assign(state, patch);
@@ -158,6 +186,41 @@ export function createBrainServer(opts: BrainServerOptions) {
       notify(Resources.status);
     }
   }
+
+  /** After `init`, move the index from memory to .brain/.cache/brain.db so it survives restarts. */
+  async function persistIndex() {
+    if (store.location !== ":memory:") return;
+    const old = store;
+    // Copy, don't rebuild: the index is complete now, and docs can be saved straight away.
+    store = await indexer.swapStore((current) => {
+      current.persistTo(diskPath);
+      return BrainStore.open(diskPath);
+    });
+    old.close();
+    store.pruneUsage(USAGE_RETENTION_DAYS);
+    void reindex().catch(() => {}); // picks up edits made while this ran; cheap when nothing changed
+  }
+
+  async function reindex(): Promise<ReindexResult> {
+    setState({ state: "indexing", message: "Scanning files" });
+    try {
+      const result = await indexer.run();
+      setState({ state: "idle", message: null });
+      notify(Resources.status);
+      return result;
+    } catch (e) {
+      log(`index failed: ${(e as Error).stack ?? e}`);
+      setState({ state: "error", message: (e as Error).message });
+      throw e;
+    }
+  }
+
+
+  /** A new MCP session: its own server object, subscriptions and admin flag, over the shared core. */
+  function createSession(): SessionHandle {
+  const server = new McpServer({ name: "brain-mcp", version: SERVER_VERSION });
+  const subscribed = new Set<string>();
+  let admin = false; // set by a successful brain_admin_hello, for this session only
 
   // ---- resources: read-only, available to every client ---------------------
   server.server.registerCapabilities({ resources: { subscribe: true } });
@@ -395,20 +458,6 @@ export function createBrainServer(opts: BrainServerOptions) {
     },
   );
 
-  /** After `init`, move the index from memory to .brain/.cache/brain.db so it survives restarts. */
-  async function persistIndex() {
-    if (store.location !== ":memory:") return;
-    const old = store;
-    // Copy, don't rebuild: the index is complete now, and docs can be saved straight away.
-    store = await indexer.swapStore((current) => {
-      current.persistTo(diskPath);
-      return BrainStore.open(diskPath);
-    });
-    old.close();
-    store.pruneUsage(USAGE_RETENTION_DAYS);
-    void reindex().catch(() => {}); // picks up edits made while this ran; cheap when nothing changed
-  }
-
   server.registerTool(
     AdminTools.init,
     { description: "Create the .brain layout (config, OKF knowledge bundle, .gitignore). Never overwrites existing files." },
@@ -441,20 +490,6 @@ export function createBrainServer(opts: BrainServerOptions) {
       return json(result.config);
     }),
   );
-
-  async function reindex(): Promise<ReindexResult> {
-    setState({ state: "indexing", message: "Scanning files" });
-    try {
-      const result = await indexer.run();
-      setState({ state: "idle", message: null });
-      notify(Resources.status);
-      return result;
-    } catch (e) {
-      log(`index failed: ${(e as Error).stack ?? e}`);
-      setState({ state: "error", message: (e as Error).message });
-      throw e;
-    }
-  }
 
   server.registerTool(
     AdminTools.reindex,
@@ -519,6 +554,16 @@ export function createBrainServer(opts: BrainServerOptions) {
     }),
   );
 
+  server.registerTool(
+    AdminTools.shutdown,
+    { description: "Stop the daemon. Only meaningful when the server runs as a shared daemon; clients reconnect to a new one." },
+    guarded(async () => {
+      if (!opts.onShutdown) return fail("This server is not a daemon, so there is nothing to shut down.");
+      setImmediate(opts.onShutdown);
+      return json({ stopping: true });
+    }),
+  );
+
   const scopeShape = {
     kind: GenerationScopeSchema.shape.kind,
     under: GenerationScopeSchema.shape.under,
@@ -559,9 +604,19 @@ export function createBrainServer(opts: BrainServerOptions) {
     guarded(async () => json(generator.cancel())),
   );
 
+  const handle: SessionHandle = { server, subscribed, admin: () => admin, connectedAt: Date.now() };
+  sessions.add(handle);
+  opts.onSessionsChanged?.(sessions.size);
+  server.server.onclose = () => {
+    if (sessions.delete(handle)) opts.onSessionsChanged?.(sessions.size);
+  };
+  return handle;
+  }
+
   let watcher: { close(): void } | null = null;
   return {
-    server,
+    createSession,
+    sessionCount: () => sessions.size,
     status,
     reindex,
     /** Called once connected: opens the persisted index if the workspace is initialised, scans, and starts watching. */
@@ -589,4 +644,14 @@ export function createBrainServer(opts: BrainServerOptions) {
       store.close();
     },
   };
+}
+
+/**
+ * One server for one stdio connection: the shape every client has used so far. The daemon builds a core and
+ * gives each HTTP session its own `createSession()` instead.
+ */
+export function createBrainServer(opts: BrainServerOptions) {
+  const core = createBrainCore(opts);
+  const session = core.createSession();
+  return { server: session.server, status: core.status, reindex: core.reindex, start: core.start, close: core.close };
 }

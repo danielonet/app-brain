@@ -66,7 +66,15 @@ The extension talks to the server with the same protocol agents use. This avoids
 | **A. stdio, one process per client** | The extension spawns its own `brain-mcp`. Claude Code and others spawn theirs. All share `.brain/.cache/brain.db` (SQLite WAL). | Simple. Matches how every MCP client already works. | Several server processes per workspace. Each one must coordinate writes. The extension cannot see what another client's server is doing. |
 | **B. one local daemon, HTTP on `127.0.0.1`** | The extension starts (or attaches to) a single `brain-mcp` per workspace and publishes its URL. Agents connect to the same URL. | One indexer, one writer, and the extension sees agent usage live. | Needs a port, a token and a lock file. Not every client supports HTTP MCP yet. |
 
-**Recommendation:** build the server to support both. Ship **B as the default in VS Code** (the extension owns the daemon, the lock file is `.brain/.cache/server.json` with `{pid, port, token}`), and keep **A** for terminal use without VS Code. When a stdio server starts and finds a live daemon, it proxies to it instead of indexing a second time.
+**Recommendation (built):** support both. **B is the default in VS Code**, and **A** remains for terminal use without VS Code. When a stdio server starts and finds a live daemon it proxies to it instead of indexing a second time. How it works, and where it differs from the first draft of this plan:
+
+- **Agents keep a stable config.** Claude Code, Cursor and Copilot still run `brain-mcp` as a stdio command, with no token and no port in any file. If a daemon is live, that process becomes a thin proxy to it; if not, it runs on its own as before. (Pointing an agent straight at the HTTP URL would put a token that changes at every start into a config file that is often committed.)
+- **One lock, one daemon.** `brain-mcp --daemon` takes a lock and refuses to start twice; a crashed daemon's leftovers are detected (dead pid, failed health check) and replaced.
+- **Runtime files are outside the workspace.** `server.json` and the lock live in a per-user directory (`~/.cache/app-brain/run/<workspace-hash>/` on Linux, the platform equivalents elsewhere), not in `.brain/.cache/`. Writing `.brain/` before the user runs "Initialise" would break the promise that nothing is written until then.
+- **Two tokens, and only one of them is in a file.** `server.json` (mode `0600`) holds an *agent token* only. Anything running as you can read that file, so the *admin token* is never in it: the extension keeps it in VS Code secret storage and gives it to the daemon on stdin. The same goes for the LLM API key. Neither is in the command line or the environment, so neither is visible in `ps` or `/proc/<pid>/environ`.
+- **Sessions, not a single connection.** Each client gets its own MCP session (own admin flag, own subscriptions, own client name for the usage log) over one shared core. A client that disappears without the protocol's DELETE is dropped when its notification stream has stayed closed for a grace period.
+- **Lifecycle.** The extension attaches to a live daemon or spawns a detached one; replaces it if the LLM settings or key changed (they travel only at start-up); stops it when it closes if it was the only client, and leaves it running for agents or another window otherwise. The daemon also exits by itself after ten minutes with nobody connected.
+- **Fallback.** If the daemon cannot start, the extension uses a private stdio server for that window and says why.
 
 ---
 
@@ -239,7 +247,7 @@ All output lives under **one root folder at the workspace root: `.brain/`**. It 
     ├── site/                    # static markdown/HTML export          [gitignored]
     ├── .cache/                  #                                      [gitignored]
     │   ├── brain.db             #   SQLite: graph, FTS, embeddings, llm_call, usage log
-    │   ├── server.json          #   {pid, port, token} for the running daemon
+    │   ├── (server.json and the daemon lock are in a per-user runtime directory, not here; see §2)
     │   └── logs/
     └── .gitignore               # written by the server, covers the ignored paths above
 ```
@@ -351,7 +359,7 @@ The graph is the point of choosing OKF, so its construction is explicit.
 
 1. Find the workspace root and read `.brain/config.json` (absent → offer **Brain: Initialise**, which asks the server to create it with defaults and write `.brain/.gitignore`).
 2. Resolve the server: bundled build, a user-set path, or `npx`-style install. Check its version against the extension's required protocol version. On mismatch, show a clear upgrade message and do not connect.
-3. Read `.brain/.cache/server.json`. If a live daemon exists (pid alive, health check passes), attach. Otherwise spawn one.
+3. Read `server.json` from the per-user runtime directory (§2). If a live daemon exists (pid alive, authenticated health check passes, same LLM settings and output folder), attach. Otherwise replace or spawn one, handing it the admin token and any API key on stdin.
 4. Connect as an MCP client, call `brain_admin_hello` to declare itself the extension and receive the admin tool set.
 5. Subscribe to `brain://status` and `brain://coverage`; draw the status bar and views.
 6. On a crash, restart with backoff (3 tries), then show an error in the status bar with a **Show Logs** action.
@@ -379,7 +387,9 @@ packages/
 
 ## 8. Security and privacy
 
-- **HTTP transport binds to `127.0.0.1` only** and requires a random bearer token generated at daemon start, stored in `.brain/.cache/server.json` with file mode `0600`. No token, no connection.
+- **HTTP transport binds to `127.0.0.1` only** and requires a random bearer token generated at daemon start, stored in `server.json` (mode `0600`, in a per-user directory outside the workspace). No token, no connection. A request must also carry our own `Host` (a defence against DNS rebinding), must come from a loopback peer, and must not carry an `Origin` header: a web page is never a client. Bodies are capped at 4 MB and sessions at 64.
+- **The token in `server.json` is the agent token.** It lets a client call the read-only tools and nothing else. Anything running as the same user can read it, which is accepted: it grants no more than reading the code would.
+- **The admin token and the API key are never in a file, the environment or the command line.** They are passed on stdin and held in memory. The limit of this: an agent that is itself malicious, running as you with a shell, can still read another process's memory. The design stops accidents and prompt-injected tools, not a hostile process that already is you.
 - **Admin tools are gated.** `brain_admin_*` tools work only for a client that presents the admin token. Agents get the read-only agent tool set, so an agent cannot approve its own summaries or change config.
 - **No secrets on disk in the repo.** API keys live in `SecretStorage` and are passed to the server by environment variable when it is spawned.
 - **Never indexed, regardless of config:** `.env*`, key and certificate files, anything matching the secret-file patterns, and everything in `.gitignore` unless explicitly included.
