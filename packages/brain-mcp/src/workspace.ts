@@ -55,12 +55,13 @@ export class BrainWorkspace {
   async writeConfig(input: unknown): Promise<{ config: BrainConfig } | { errors: ConfigError[] }> {
     const parsed = ConfigSchema.safeParse(input);
     if (!parsed.success) {
-      return { errors: parsed.error.issues.map((i) => ({ path: i.path.join("."), message: i.message })) };
+      return { errors: parsed.error.issues.map((i) => ({ path: i.path.join("."), pathParts: i.path, message: i.message })) };
     }
     if (parsed.data.outputDir !== this.outputDir) {
       return {
         errors: [{
           path: "outputDir",
+          pathParts: ["outputDir"],
           message: `The server is running with outputDir "${this.outputDir}". Move the folder and restart the server with the new path to change it.`,
         }],
       };

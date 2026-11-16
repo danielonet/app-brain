@@ -10,7 +10,7 @@ generate application context out of code base
 |---|---|
 | `packages/brain-protocol` | Shared types and schemas: config, status, usage, review, validation, tool and resource names |
 | `packages/brain-mcp` | Stdio MCP server (details below) |
-| `packages/brain-vscode` | Extension: spawns the server, status bar (files, symbols, docs to review), **Review Queue** (approve or reject generated docs), **Agent Activity** view and a status bar flash when an agent calls the brain, **Search Symbols**, **Validate Knowledge Bundle**, initialise, reindex, open output folder, copy MCP config, Copilot agent-mode registration |
+| `packages/brain-vscode` | Extension: spawns the server, status bar (files, symbols, docs to review), **Review Queue** (approve or reject generated docs), **Settings** (a form generated from the server's config schema, with inline errors and a model-price table), **Agent Activity** view and a status bar flash when an agent calls the brain, **Search Symbols**, **Validate Knowledge Bundle**, initialise, reindex, open output folder, copy MCP config, Copilot agent-mode registration |
 
 **Indexing.** tree-sitter (WASM) symbols for TypeScript, TSX, JavaScript and Python; import edges between files; SQLite + FTS5 store; incremental re-index by mtime and content hash; file watcher. The index lives in memory until you run **Brain: Initialise**, then moves to `.brain/.cache/brain.db` (gitignored). Secret files (`.env*`, keys, certificates) and everything in `.gitignore` are never indexed.
 
@@ -20,7 +20,7 @@ generate application context out of code base
 
 **Admin tools (token-gated, extension only).** `hello`, `init`, `get_config`, `get_config_schema`, `set_config`, `reindex`, `review_summary`, `validate`. Agents started without `BRAIN_ADMIN_TOKEN` cannot call them, so an agent cannot approve its own docs.
 
-Not built yet: the cost calculator UI and price-table editor, doc generation by the server itself (`vscode.lm`, API key), the dependency-graph view, the settings webview, notes (`add_note`), symbol-level call edges (LSP/SCIP), the HTTP daemon. See the plans.
+Not built yet: the cost report screens (the price table is editable and used for cost records, but nothing charts it yet), doc generation by the server itself (`vscode.lm`, API key), the dependency-graph view, notes (`add_note`), symbol-level call edges (LSP/SCIP), the HTTP daemon. See the plans.
 
 ## Develop
 

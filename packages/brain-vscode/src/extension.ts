@@ -4,6 +4,7 @@ import * as path from "node:path";
 import * as vscode from "vscode";
 import type { BrainStatus, PendingItem, UsageSummary } from "@app-brain/brain-protocol";
 import { BrainClient } from "./client";
+import { SettingsPanel } from "./settingsPanel";
 import { ActivityItem, ConnState, ReviewRow, activityItems, flashText, mcpConfigSnippet, reviewRows, statusBarText, validationReport, validationSummary } from "./format";
 
 let client: BrainClient | undefined;
@@ -173,6 +174,9 @@ export async function activate(context: vscode.ExtensionContext) {
         out.show(true);
         void vscode.window.showInformationMessage(`Brain: ${validationSummary(result)}`);
       }),
+    ),
+    vscode.commands.registerCommand("brain.openSettings", () =>
+      SettingsPanel.show(context.extensionUri, () => client, path.posix.join(cfg().get<string>("outputDir", ".brain"), "config.json")),
     ),
     vscode.commands.registerCommand("brain.search", () => searchSymbols(() => client, folder.uri.fsPath)),
     vscode.commands.registerCommand("brain.openOutputFolder", () => {

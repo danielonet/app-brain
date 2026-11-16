@@ -65,18 +65,21 @@ export const ConfigSchema = z
     languages: z.array(z.string()).describe("Languages to index. Empty means auto-detect.").default([]),
     docs: z
       .object({
-        granularity: z.enum(["symbol", "file", "module", "architecture-only"]).default("module"),
-        autoGenerate: z.boolean().default(false),
-        maxCostUsd: z.number().nonnegative().nullable().describe("Stop a generation job at this spend. null means no cap.").default(null),
+        granularity: z
+          .enum(["symbol", "file", "module", "architecture-only"])
+          .describe("How finely code is documented: per symbol, per file, per module, or only an architecture overview.")
+          .default("module"),
+        autoGenerate: z.boolean().describe("Generate docs automatically after indexing, instead of only on request.").default(false),
+        maxCostUsd: z.number().nonnegative().nullable().describe("Stop a generation job at this spend. Leave empty for no cap.").default(null),
       })
       .default({}),
     commitKnowledge: z.boolean().describe("Whether the OKF bundle is meant to be committed.").default(true),
     pricing: z
       .record(
         z.object({
-          inputPerMtok: z.number().nonnegative(),
-          outputPerMtok: z.number().nonnegative(),
-          cachedPerMtok: z.number().nonnegative().optional(),
+          inputPerMtok: z.number().nonnegative().describe("Input price, USD per million tokens."),
+          outputPerMtok: z.number().nonnegative().describe("Output price, USD per million tokens."),
+          cachedPerMtok: z.number().nonnegative().optional().describe("Cached-input price, USD per million tokens (optional)."),
         }),
       )
       .describe("USD per million tokens, by model id. Edited by the user; never hard-coded.")
@@ -150,7 +153,10 @@ export type ReindexResult = z.infer<typeof ReindexResultSchema>;
 
 /** Returned (as `isError` tool content) when config validation fails. */
 export interface ConfigError {
+  /** Dotted, for humans and logs. Ambiguous when a key contains a dot (model ids do). */
   path: string;
+  /** Exact location, for matching an error to a form field. */
+  pathParts: (string | number)[];
   message: string;
 }
 

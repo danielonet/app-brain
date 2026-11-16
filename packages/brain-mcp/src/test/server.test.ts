@@ -144,6 +144,7 @@ describe("brain-mcp over stdio", () => {
       const bad = await call(c, AdminTools.setConfig, { config: { docs: { granularity: "nonsense" } } });
       assert.equal(bad.isError, true);
       assert.equal(bad.body.details[0].path, "docs.granularity");
+      assert.deepEqual(bad.body.details[0].pathParts, ["docs", "granularity"]);
 
       const moved = await call(c, AdminTools.setConfig, { config: { outputDir: "elsewhere" } });
       assert.equal(moved.isError, true);
@@ -162,6 +163,8 @@ describe("brain-mcp over stdio", () => {
       await call(c, AdminTools.hello, { adminToken: TOKEN });
       const schema = (await call(c, AdminTools.getConfigSchema)).body;
       assert.ok(JSON.stringify(schema).includes("granularity"));
+      assert.equal(schema.type, "object", "the form renders from the root, no $ref wrapper");
+      assert.ok(schema.properties.pricing.additionalProperties.properties.inputPerMtok.description);
     } finally { await c.close(); }
   });
 

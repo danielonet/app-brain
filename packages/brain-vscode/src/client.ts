@@ -29,6 +29,13 @@ export interface BrainClientOptions {
   onPending?: (items: PendingItem[]) => void;
 }
 
+/** A tool call the server answered with an error. `details` carries field errors for set_config. */
+export class ToolError extends Error {
+  constructor(message: string, readonly details?: unknown) {
+    super(message);
+  }
+}
+
 export interface SearchHit {
   symbol: string;
   kind: string;
@@ -152,6 +159,17 @@ export class BrainClient {
     return this.call<ReviewResult>(AdminTools.reviewSummary, { target, action, by, ...(note ? { note } : {}) });
   }
 
+  getConfig(): Promise<Record<string, unknown>> {
+    return this.call(AdminTools.getConfig);
+  }
+  getConfigSchema(): Promise<Record<string, unknown>> {
+    return this.call(AdminTools.getConfigSchema);
+  }
+  /** Rejects with a ToolError whose `details` is the list of field errors. */
+  setConfig(config: Record<string, unknown>): Promise<Record<string, unknown>> {
+    return this.call(AdminTools.setConfig, { config });
+  }
+
   validate(): Promise<ValidationResult> {
     return this.call<ValidationResult>(AdminTools.validate);
   }
@@ -166,7 +184,7 @@ export class BrainClient {
     if (!this.client) throw new Error("Brain server is not running.");
     const res = (await this.client.callTool({ name, arguments: args })) as { isError?: boolean; content: { text: string }[] };
     const body = JSON.parse(res.content[0].text);
-    if (res.isError) throw new Error(body.error ?? "Tool call failed");
+    if (res.isError) throw new ToolError(body.error ?? "Tool call failed", body.details);
     return body as T;
   }
 

@@ -366,7 +366,7 @@ export function createBrainServer(opts: BrainServerOptions) {
   server.registerTool(
     AdminTools.getConfigSchema,
     { description: "JSON Schema of the team config, used by the extension to render the settings form." },
-    guarded(async () => json(zodToJsonSchema(ConfigSchema, { name: "BrainConfig", $refStrategy: "none" }))),
+    guarded(async () => json(zodToJsonSchema(ConfigSchema, { $refStrategy: "none" }))),
   );
 
   server.registerTool(
