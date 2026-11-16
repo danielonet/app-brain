@@ -1,0 +1,555 @@
+import { createHash } from "node:crypto";
+import { promises as fs } from "node:fs";
+import * as path from "node:path";
+import {
+  Coverage, DocKind, DocStatus, PendingItem, ReviewResult, TrustTier, ValidationIssue, ValidationResult,
+} from "@app-brain/brain-protocol";
+import { callCost } from "../cost";
+import type { DocIndex } from "./graph";
+import type { BrainStore } from "../store";
+import type { BrainWorkspace } from "../workspace";
+import { Bundle, ConceptFile } from "./bundle";
+import {
+  FrontMatter, bundleLinks, cycles, dependencyBlock, getPath, isNonEmptyString, linkTo, stripAutoMarkers, withDependencyBlock,
+} from "./format";
+
+export const SERVER_PRODUCER = "brain-mcp";
+const MAX_SUMMARY = 20_000;
+const MAX_DESCRIPTION = 300;
+
+export interface Target {
+  kind: DocKind;
+  target: string; // repo-relative path; "." for the repo root module
+  hash: string;
+  symbols: number;
+  importedBy: number;
+  imports: number;
+  files: number;
+}
+
+interface State {
+  reviewed?: ConceptFile;
+  draft?: ConceptFile;
+  hash: string;
+}
+
+/**
+ * OKF trust tier, derived from `verified` and never stored (OKF §4): no `verified` is unverified;
+ * only non-human actors is machine-confirmed; any `human:` actor is human-reviewed. `verified`
+ * may be a single mapping or a list.
+ */
+export function trustTier(fm: FrontMatter): TrustTier {
+  const v = fm.verified;
+  const entries = Array.isArray(v) ? v : v && typeof v === "object" ? [v] : [];
+  const actors = entries.map((e) => (e as { by?: unknown }).by).filter((b): b is string => typeof b === "string" && b.length > 0);
+  if (actors.length === 0) return "unverified";
+  return actors.some((a) => a.startsWith("human:")) ? "human-reviewed" : "machine-confirmed";
+}
+
+const sha1 = (s: string) => createHash("sha1").update(s).digest("hex").slice(0, 16);
+const iso = () => new Date().toISOString();
+
+export function conceptPathFor(kind: DocKind, target: string): string {
+  return kind === "file" ? `files/${target}.md` : `modules/${target === "." ? "_root" : target}.md`;
+}
+
+/** `src/auth/session.ts` -> `src/auth`; a top-level file -> `.`. */
+const dirOf = (p: string) => path.posix.dirname(p);
+const moduleConcept = (dir: string) => conceptPathFor("module", dir);
+
+/** Normalises user-supplied targets and rejects anything outside the repo. */
+export function cleanTarget(raw: string): string {
+  let t = raw.trim().replace(/\\/g, "/").replace(/^\.\//, "").replace(/\/+$/, "");
+  if (!t) t = ".";
+  const norm = path.posix.normalize(t);
+  if (norm.startsWith("..") || norm.startsWith("/") || norm.includes("\0")) throw new Error(`Target must be a path inside the repository: ${raw}`);
+  return norm;
+}
+
+const slug = (s: string) => s.trim().replace(/[^\w.@-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 64);
+
+export class Knowledge {
+  readonly bundle: Bundle;
+
+  constructor(
+    private readonly ws: BrainWorkspace,
+    private readonly store: () => BrainStore,
+    private readonly changed: () => void,
+    /** False while the index is being (re)built; dependencies must not be recomputed from a partial index. */
+    private readonly indexReady: () => boolean = () => true,
+  ) {
+    this.bundle = new Bundle(ws);
+  }
+
+  // ---- what can be documented ------------------------------------------------
+
+  /** Files with symbols, and the directories that contain at least two of them. */
+  targets(): Target[] {
+    const files = this.store().docFiles().filter((f) => f.symbols > 0);
+    const out: Target[] = files.map((f) => ({
+      kind: "file", target: f.path, hash: f.content_hash, symbols: f.symbols, importedBy: f.imported_by, imports: f.imports, files: 1,
+    }));
+    const dirs = new Map<string, typeof files>();
+    for (const f of files) {
+      let d = dirOf(f.path);
+      for (;;) {
+        (dirs.get(d) ?? dirs.set(d, []).get(d)!).push(f);
+        if (d === ".") break;
+        d = dirOf(d);
+      }
+    }
+    for (const [d, list] of dirs) {
+      if (list.length < 2) continue;
+      const under = new Set(list.map((f) => f.path));
+      let importedBy = 0;
+      for (const f of list) importedBy += this.store().neighbours(f.path, "in").filter((e) => !under.has(e.from)).length;
+      out.push({
+        kind: "module", target: d,
+        hash: sha1(list.map((f) => `${f.path}:${f.content_hash}`).join("\n")),
+        symbols: list.reduce((n, f) => n + f.symbols, 0), importedBy, imports: 0, files: list.length,
+      });
+    }
+    return out;
+  }
+
+  /** Resolves a user-supplied target to a documentable thing, or explains why not. */
+  resolve(rawTarget: string, kind?: DocKind): Target {
+    const target = cleanTarget(rawTarget);
+    const all = this.targets();
+    const hit = all.find((t) => t.target === target && (!kind || t.kind === kind));
+    if (hit) return hit;
+    const store = this.store();
+    if (store.hasFile(target)) throw new Error(`${target} has no symbols to document (not a supported language, or empty).`);
+    throw new Error(`Unknown target: ${rawTarget}. Use a file path from list_undocumented or search_code, or a directory with at least two source files.`);
+  }
+
+  // ---- state of each target -------------------------------------------------------
+
+  private async states(): Promise<{ states: Map<string, State>; targets: Target[]; drafts: ConceptFile[] }> {
+    const targets = this.targets();
+    const [k, d] = await Promise.all([this.bundle.list("knowledge"), this.bundle.list("drafts")]);
+    const reviewed = new Map(k.concepts.map((c) => [c.conceptPath, c]));
+    const draftMap = new Map(d.concepts.map((c) => [c.conceptPath, c]));
+    const states = new Map<string, State>();
+    for (const t of targets) {
+      const cp = conceptPathFor(t.kind, t.target);
+      states.set(`${t.kind}:${t.target}`, { reviewed: reviewed.get(cp), draft: draftMap.get(cp), hash: t.hash });
+    }
+    return { states, targets, drafts: d.concepts };
+  }
+
+  private static builtFrom(c?: ConceptFile): string | undefined {
+    const h = c ? getPath(c.fm, "brain.built_from_hash") : undefined;
+    return typeof h === "string" ? h : undefined;
+  }
+
+  /** Doc status and trust tier for every documentable file and module, for the graph and for agents. */
+  async docIndex(): Promise<DocIndex> {
+    const { states, targets } = await this.states();
+    const index: DocIndex = new Map();
+    for (const t of targets) {
+      const s = states.get(`${t.kind}:${t.target}`)!;
+      let status: DocStatus = "none";
+      let trust: TrustTier | null = null;
+      if (s.reviewed) {
+        status = Knowledge.builtFrom(s.reviewed) === s.hash ? "reviewed" : "stale";
+        trust = trustTier(s.reviewed.fm);
+      } else if (s.draft) {
+        status = "draft";
+      }
+      index.set(`${t.kind}:${t.target}`, { status, trust });
+    }
+    return index;
+  }
+
+  /**
+   * The reviewed documentation for a file or module, as served to agents. Drafts are never
+   * served: only text a person approved, flagged stale when the code has changed since.
+   */
+  async overview(rawTarget: string): Promise<Record<string, unknown>> {
+    const target = cleanTarget(rawTarget);
+    const { states, targets } = await this.states();
+    if (target === ".") {
+      // The repo root: a person-approved architecture overview takes precedence over the root module's doc.
+      const arch = (await this.bundle.exists("knowledge", "architecture.md")) ? await this.bundle.read("knowledge", "architecture.md") : null;
+      if (arch && "fm" in arch) return this.shape(target, "module", arch, true);
+    }
+    const hit = targets.find((x) => x.target === target);
+    if (!hit) {
+      return { target, documented: false, reason: "Nothing documentable at this path (use a source file, or a directory with at least two source files)." };
+    }
+    const s = states.get(`${hit.kind}:${target}`)!;
+    if (!s.reviewed) {
+      return {
+        target, kind: hit.kind, documented: false, draft_pending: Boolean(s.draft),
+        hint: "No reviewed documentation yet. Use get_symbol or search_code, or write one with save_summary for a person to review.",
+      };
+    }
+    return this.shape(target, hit.kind, s.reviewed, Knowledge.builtFrom(s.reviewed) === s.hash);
+  }
+
+  private shape(target: string, kind: DocKind, c: ConceptFile, fresh: boolean): Record<string, unknown> {
+    const MAX = 6000;
+    const verified = c.fm.verified;
+    const last = (Array.isArray(verified) ? verified.at(-1) : verified) as { by?: string; at?: string } | undefined;
+    return {
+      target, kind, documented: true,
+      status: fresh ? "reviewed" : "stale",
+      trust: trustTier(c.fm),
+      ...(fresh ? {} : { warning: "The code changed after this was written. Treat it as possibly out of date and check the source." }),
+      description: isNonEmptyString(c.fm.description) ? c.fm.description : null,
+      reviewed_by: last?.by ?? null,
+      reviewed_at: last?.at ?? null,
+      doc: c.body.length > MAX ? c.body.slice(0, MAX) + "\n…(truncated)" : c.body,
+    };
+  }
+
+  async coverage(): Promise<Coverage> {
+    const { states, targets } = await this.states();
+    const empty = () => ({ total: 0, reviewed: 0, drafts: 0, stale: 0 });
+    const out: Coverage = { files: empty(), modules: empty() };
+    for (const t of targets) {
+      const bucket = t.kind === "file" ? out.files : out.modules;
+      const s = states.get(`${t.kind}:${t.target}`)!;
+      bucket.total++;
+      if (s.reviewed) {
+        if (Knowledge.builtFrom(s.reviewed) === s.hash) bucket.reviewed++;
+        else bucket.stale++;
+      }
+      if (s.draft) bucket.drafts++;
+    }
+    return out;
+  }
+
+  async pending(): Promise<PendingItem[]> {
+    const { states, drafts } = await this.states();
+    const hashByTarget = new Map<string, string>();
+    for (const [key, s] of states) hashByTarget.set(key, s.hash);
+    const reviewedPaths = new Set((await this.bundle.list("knowledge")).concepts.map((c) => c.conceptPath));
+    const items: PendingItem[] = [];
+    for (const d of drafts) {
+      const target = getPath(d.fm, "brain.target");
+      const kind = getPath(d.fm, "brain.kind");
+      if (typeof target !== "string" || (kind !== "file" && kind !== "module")) continue;
+      const gen = (d.fm.generated ?? {}) as { by?: unknown; at?: unknown };
+      const current = hashByTarget.get(`${kind}:${target}`);
+      items.push({
+        target, kind, conceptPath: d.conceptPath, draftFile: this.bundle.rel("drafts", d.conceptPath),
+        description: isNonEmptyString(d.fm.description) ? d.fm.description : "",
+        generatedBy: typeof gen.by === "string" ? gen.by : "unknown",
+        generatedAt: typeof gen.at === "string" ? gen.at : "",
+        model: (getPath(d.fm, "brain.llm.model") as string | undefined) ?? null,
+        stale: current !== undefined && Knowledge.builtFrom(d) !== current,
+        replacesReviewed: reviewedPaths.has(d.conceptPath),
+      });
+    }
+    return items.sort((a, b) => b.generatedAt.localeCompare(a.generatedAt));
+  }
+
+  async counts(): Promise<{ reviewed: number; drafts: number; stale: number }> {
+    const c = await this.coverage();
+    return { reviewed: c.files.reviewed + c.modules.reviewed, drafts: c.files.drafts + c.modules.drafts, stale: c.files.stale + c.modules.stale };
+  }
+
+  // ---- list_undocumented -------------------------------------------------------------
+
+  async listUndocumented(opts: { kind: DocKind; limit: number; offset: number }) {
+    const { states, targets } = await this.states();
+    const store = this.store();
+    const rows = targets
+      .filter((t) => t.kind === opts.kind)
+      .map((t) => ({ t, s: states.get(`${t.kind}:${t.target}`)! }))
+      .filter(({ t, s }) => {
+        const reviewedFresh = s.reviewed && Knowledge.builtFrom(s.reviewed) === t.hash;
+        const draftFresh = s.draft && Knowledge.builtFrom(s.draft) === t.hash;
+        return !reviewedFresh && !draftFresh;
+      })
+      .sort((a, b) => b.t.importedBy - a.t.importedBy || b.t.symbols - a.t.symbols || a.t.target.localeCompare(b.t.target));
+    const page = rows.slice(opts.offset, opts.offset + opts.limit).map(({ t, s }) => ({
+      target: t.target,
+      kind: t.kind,
+      reason: s.reviewed ? "stale" : s.draft ? "draft-outdated" : "none",
+      imported_by: t.importedBy,
+      ...(t.kind === "file"
+        ? { symbols: store.symbolsInFile(t.target, 8).map((x) => x.qualified_name), imports: t.imports }
+        : { files: t.files }),
+    }));
+    const next = opts.offset + page.length;
+    return { total: rows.length, results: page, ...(next < rows.length ? { next_offset: next } : {}) };
+  }
+
+  // ---- what the generator needs ------------------------------------------------------
+
+  /**
+   * Targets to write docs for, in the order to write them: files by how many files import them, then
+   * modules from the deepest up, so a module's prompt can read the summaries of what it contains.
+   */
+  async plan(scope: { kind: "file" | "module" | "both"; under?: string; includeStale: boolean; limit?: number }) {
+    const { states, targets } = await this.states();
+    const under = scope.under ? cleanTarget(scope.under) : undefined;
+    const inScope = (t: Target) => under === undefined || under === "." || t.target === under || t.target.startsWith(under + "/");
+    const picked: { target: Target; reason: "none" | "stale" | "draft-outdated" }[] = [];
+    for (const t of targets) {
+      if ((scope.kind !== "both" && t.kind !== scope.kind) || !inScope(t)) continue;
+      const s = states.get(`${t.kind}:${t.target}`)!;
+      const reviewedFresh = s.reviewed && Knowledge.builtFrom(s.reviewed) === t.hash;
+      const draftFresh = s.draft && Knowledge.builtFrom(s.draft) === t.hash;
+      if (reviewedFresh || draftFresh) continue;
+      const reason = s.reviewed ? "stale" : s.draft ? "draft-outdated" : "none";
+      if (reason === "stale" && !scope.includeStale) continue;
+      picked.push({ target: t, reason });
+    }
+    const depth = (p: string) => (p === "." ? 0 : p.split("/").length);
+    picked.sort((a, b) => {
+      if (a.target.kind !== b.target.kind) return a.target.kind === "file" ? -1 : 1;
+      if (a.target.kind === "module") return depth(b.target.target) - depth(a.target.target) || b.target.importedBy - a.target.importedBy || a.target.target.localeCompare(b.target.target);
+      return b.target.importedBy - a.target.importedBy || b.target.symbols - a.target.symbols || a.target.target.localeCompare(b.target.target);
+    });
+    return scope.limit ? picked.slice(0, scope.limit) : picked;
+  }
+
+  /** One-line description of a target's doc (reviewed, else draft), for another target's prompt. */
+  async describe(kind: DocKind, target: string): Promise<string | null> {
+    const cp = conceptPathFor(kind, target);
+    for (const area of ["knowledge", "drafts"] as const) {
+      if (!(await this.bundle.exists(area, cp))) continue;
+      const c = await this.bundle.read(area, cp);
+      if ("fm" in c && isNonEmptyString(c.fm.description)) return c.fm.description;
+    }
+    return null;
+  }
+
+  /** What reviewers said about earlier attempts at this target (newest last), so the next attempt can use it. */
+  async feedbackFor(target: string, max = 3): Promise<string[]> {
+    let text: string;
+    try {
+      text = await fs.readFile(this.ws.abs("feedback", "feedback.jsonl"), "utf8");
+    } catch {
+      return [];
+    }
+    const notes: string[] = [];
+    for (const line of text.split("\n")) {
+      try {
+        const e = JSON.parse(line) as { target?: string; action?: string; note?: unknown };
+        if (e.target === target && (e.action === "reject" || e.action === "approve-edited") && typeof e.note === "string" && e.note.trim()) {
+          notes.push((e.action === "reject" ? "Rejected: " : "Approved after edits: ") + e.note.trim().slice(0, 500));
+        }
+      } catch { /* a torn line is not worth failing for */ }
+    }
+    return notes.slice(-max);
+  }
+
+  // ---- save_summary -------------------------------------------------------------------
+
+  /** Module-level or file-level neighbours as plain paths, for prompts. */
+  dependencyTargets(t: Target): { dependsOn: string[]; usedBy: string[] } {
+    const d = this.dependencies(t);
+    const clean = (c: string) => c.replace(/\.md$/, "").replace(/^(files|modules)\//, "").replace(/^_root$/, ".");
+    return { dependsOn: d.dependsOn.map(clean), usedBy: d.usedBy.map(clean) };
+  }
+
+  private dependencies(t: Target): { dependsOn: string[]; usedBy: string[] } {
+    const store = this.store();
+    const self = conceptPathFor(t.kind, t.target);
+    if (t.kind === "file") {
+      return {
+        dependsOn: [...new Set(store.neighbours(t.target, "out").map((e) => conceptPathFor("file", e.to)))].sort(),
+        usedBy: [...new Set(store.neighbours(t.target, "in").map((e) => conceptPathFor("file", e.from)))].sort(),
+      };
+    }
+    const under = store.filesUnder(t.target === "." ? "" : t.target).map((f) => f.path);
+    const inside = new Set(under);
+    const dep = new Set<string>();
+    const used = new Set<string>();
+    for (const f of under) {
+      for (const e of store.neighbours(f, "out")) if (!inside.has(e.to)) dep.add(moduleConcept(dirOf(e.to)));
+      for (const e of store.neighbours(f, "in")) if (!inside.has(e.from)) used.add(moduleConcept(dirOf(e.from)));
+    }
+    dep.delete(self);
+    used.delete(self);
+    return { dependsOn: [...dep].sort(), usedBy: [...used].sort() };
+  }
+
+  async saveSummary(a: {
+    target: string; kind?: DocKind; description: string; summary: string; model: string;
+    tokensIn?: number; tokensOut?: number; tags?: string[]; client: string;
+    /** Set when the server itself called the model: exact usage replaces what an agent would report. */
+    generation?: {
+      mode: "api-key" | "local" | "vscode-lm"; provider: string; tokensIn: number | null; tokensOut: number | null; cachedTokens: number | null;
+      tokensSource: "provider-reported" | "agent-reported" | "estimated"; inputTruncated?: boolean; redactions?: number; free?: boolean;
+    };
+  }): Promise<{ target: string; kind: DocKind; draft: string; conceptPath: string; costUsd: number | null }> {
+    if (a.summary.length > MAX_SUMMARY) throw new Error(`Summary is too long (${a.summary.length} characters, max ${MAX_SUMMARY}). Summarise more tightly.`);
+    const description = a.description.replace(/\s+/g, " ").trim();
+    if (!description) throw new Error("description is required: one sentence saying what this code is for.");
+    if (description.length > MAX_DESCRIPTION) throw new Error(`description must be one short sentence (max ${MAX_DESCRIPTION} characters).`);
+    const model = a.model.trim();
+    if (!model) throw new Error("model is required: the id of the model that wrote this summary, so cost and quality can be tracked.");
+
+    const t = this.resolve(a.target, a.kind);
+    const conceptPath = conceptPathFor(t.kind, t.target);
+    const abs = t.target === "." ? this.ws.root : path.join(this.ws.root, ...t.target.split("/"));
+    const conceptDirAbs = path.join(this.ws.abs("drafts"), ...path.posix.dirname(conceptPath).split("/"));
+    const resource = path.relative(conceptDirAbs, abs).split(path.sep).join("/") || ".";
+    const { dependsOn, usedBy } = this.dependencies(t);
+    const partOf = t.target === "." ? undefined : linkTo(moduleConcept(dirOf(t.target)));
+
+    const cfg = await this.ws.readConfig();
+    const g = a.generation;
+    const tokensIn = g ? g.tokensIn : (a.tokensIn ?? null);
+    const tokensOut = g ? (g.tokensOut ?? Math.ceil(a.summary.length / 4)) : (a.tokensOut ?? Math.ceil(a.summary.length / 4));
+    const tokensSource = g ? g.tokensSource : a.tokensOut !== undefined || a.tokensIn !== undefined ? "agent-reported" : "estimated";
+    const mode = g?.mode ?? "agent";
+    // A local model costs no money; everything else is priced from the table, or left unknown.
+    const cost = g?.free ? 0 : callCost(cfg.pricing, model, { inputTokens: tokensIn, outputTokens: tokensOut, cachedTokens: g?.cachedTokens });
+
+    let lastModified: string | undefined;
+    if (t.kind === "file") lastModified = (await fs.stat(abs)).mtime.toISOString();
+
+    const now = iso();
+    const fm: FrontMatter = {
+      type: t.kind === "file" ? "Brain File" : "Brain Module",
+      title: t.target === "." ? "Repository root" : t.target,
+      description,
+      resource,
+      ...(a.tags?.length ? { tags: a.tags.map((x) => x.trim()).filter(Boolean).slice(0, 10) } : {}),
+      generated: { by: `${slug(a.client) || "agent"}/${slug(model) || "unknown"}`, at: now },
+      status: "draft",
+      sources: [{ id: "code", resource, ...(lastModified ? { last_modified: lastModified } : {}) }],
+      brain: {
+        target: t.target,
+        kind: t.kind,
+        built_from_hash: t.hash,
+        ...(partOf ? { part_of: partOf } : {}),
+        depends_on: dependsOn.map(linkTo),
+        ...(g?.inputTruncated ? { input_truncated: true } : {}),
+        ...(g?.redactions ? { redactions: g.redactions } : {}),
+        llm: {
+          model,
+          mode,
+          ...(g ? { provider: g.provider } : {}),
+          tokens_in: tokensIn,
+          tokens_out: tokensOut,
+          cost_usd: cost,
+          tokens_source: tokensSource,
+        },
+      },
+    };
+    const body = withDependencyBlock(`# Summary\n\n${stripAutoMarkers(a.summary).trim()}\n`, dependencyBlock(dependsOn, usedBy));
+    await this.bundle.write("drafts", conceptPath, fm, body);
+
+    this.store().logLlmCall({
+      target: t.target, kind: t.kind, provider: g?.provider ?? null, model, mode,
+      inputTokens: tokensIn, outputTokens: tokensOut, cachedTokens: g?.cachedTokens ?? null, tokensSource,
+      costUsd: cost, costSource: cost === null ? null : g?.free ? "local" : "price-table", outcome: "generated",
+    });
+    this.changed();
+    return { target: t.target, kind: t.kind, draft: this.bundle.rel("drafts", conceptPath), conceptPath, costUsd: cost };
+  }
+
+  // ---- review ------------------------------------------------------------------------------
+
+  async review(a: { target: string; action: "approve" | "reject"; by: string; note?: string; body?: string }): Promise<ReviewResult> {
+    const by = slug(a.by);
+    if (!by) throw new Error("`by` is required: who is making this decision.");
+    const target = cleanTarget(a.target);
+    // The draft knows its own kind; look it up instead of trusting the caller.
+    const drafts = (await this.bundle.list("drafts")).concepts;
+    const draft = drafts.find((d) => getPath(d.fm, "brain.target") === target);
+    if (!draft) throw new Error(`No draft is waiting for ${target}.`);
+    const kind = getPath(draft.fm, "brain.kind") as DocKind;
+    const conceptPath = draft.conceptPath;
+    const model = (getPath(draft.fm, "brain.llm.model") as string | undefined) ?? null;
+
+    if (a.action === "reject") {
+      await this.bundle.remove("drafts", conceptPath);
+      await this.bundle.appendFeedback({ target, action: "reject", by, model, note: a.note ?? null, rejectedText: draft.body.slice(0, 4000) });
+      this.store().setLlmOutcome(target, "rejected");
+      this.changed();
+      return { action: "reject", target, conceptPath };
+    }
+
+    const existed = await this.bundle.exists("knowledge", conceptPath);
+    const edited = a.body !== undefined && a.body.trim() !== "";
+    const fm: FrontMatter = { ...draft.fm, status: "stable", verified: { by: `human:${by}`, at: iso() } };
+
+    // Dependencies come from the code as it is now, not as it was when the draft was written.
+    const current = this.targets().find((t) => t.kind === kind && t.target === target);
+    let body = edited ? stripAutoMarkers(a.body!) : draft.body;
+    if (current && this.indexReady()) {
+      const { dependsOn, usedBy } = this.dependencies(current);
+      (fm.brain as Record<string, unknown>).depends_on = dependsOn.map(linkTo);
+      body = withDependencyBlock(body, dependencyBlock(dependsOn, usedBy));
+    }
+    await this.bundle.write("knowledge", conceptPath, fm, body);
+    await this.bundle.remove("drafts", conceptPath);
+    await this.bundle.regenerateIndexes();
+    await this.bundle.log(existed ? "Update" : "Creation", `${kind} documentation for \`${target}\` approved by ${by}${edited ? " (edited)" : ""}.`);
+    if (edited || a.note) await this.bundle.appendFeedback({ target, action: edited ? "approve-edited" : "approve", by, model, note: a.note ?? null });
+    this.store().setLlmOutcome(target, "approved");
+    this.changed();
+    return { action: "approve", target, conceptPath };
+  }
+
+  // ---- validate ----------------------------------------------------------------------------
+
+  async validate(): Promise<ValidationResult> {
+    const issues: ValidationIssue[] = [];
+    const add = (severity: ValidationIssue["severity"], code: ValidationIssue["code"], file: string, message: string) =>
+      issues.push({ severity, code, file, message });
+
+    const { concepts, broken } = await this.bundle.list("knowledge");
+    const all = await this.bundle.allMarkdown("knowledge");
+    const existing = new Set(all);
+    const conceptPaths = new Set(concepts.map((c) => c.conceptPath));
+
+    // OKF §10: every non-reserved file parses and has a non-empty `type`.
+    for (const b of broken) add("error", b.reason === "none" ? "no-frontmatter" : "bad-frontmatter", b.conceptPath, b.message);
+    for (const c of concepts) {
+      if (!isNonEmptyString(c.fm.type)) add("error", "missing-type", c.conceptPath, "Front matter has no non-empty `type` (the only required OKF key).");
+    }
+    // OKF §7: index files carry no front matter, except the root's okf_version.
+    for (const p of all.filter((x) => path.posix.basename(x) === "index.md" && x !== "index.md")) {
+      if (parseConcept0(await this.bundle.readText("knowledge", p))) add("warning", "index-frontmatter", p, "Only the root index.md may have front matter.");
+    }
+
+    // Links, orphans, dependency targets.
+    const inbound = new Map<string, number>();
+    for (const c of concepts) {
+      for (const target of new Set(bundleLinks(c.body, c.conceptPath))) {
+        if (!existing.has(target)) add("info", "broken-link", c.conceptPath, `Links to ${linkTo(target)}, which does not exist yet.`);
+        else if (target !== c.conceptPath) inbound.set(target, (inbound.get(target) ?? 0) + 1);
+      }
+    }
+    for (const c of concepts) {
+      if (!inbound.has(c.conceptPath)) add("info", "orphan", c.conceptPath, "No other concept links to this one.");
+    }
+    const store = this.store();
+    for (const c of concepts) {
+      const deps = getPath(c.fm, "brain.depends_on");
+      if (!Array.isArray(deps)) continue;
+      for (const d of deps) {
+        const m = typeof d === "string" ? d.match(/^\/files\/(.+)\.md$/) : null;
+        if (m && !store.hasFile(m[1])) add("warning", "depends-on-missing", c.conceptPath, `depends_on lists ${m[1]}, which is not in the index (deleted or renamed?).`);
+      }
+    }
+
+    // Cycles over brain.depends_on: between modules is a design smell, between files is common.
+    for (const [prefix, severity] of [["/modules/", "warning"], ["/files/", "info"]] as const) {
+      const edges = new Map<string, string[]>();
+      for (const c of concepts) {
+        if (!conceptPaths.has(c.conceptPath) || !("/" + c.conceptPath).startsWith(prefix)) continue;
+        const deps = getPath(c.fm, "brain.depends_on");
+        edges.set(linkTo(c.conceptPath), Array.isArray(deps) ? deps.filter((d): d is string => typeof d === "string" && d.startsWith(prefix)) : []);
+      }
+      for (const comp of cycles(edges)) add(severity, "cycle", comp[0].slice(1), `Circular dependency: ${comp.join(" ↔ ")}`);
+    }
+
+    return { conformant: !issues.some((i) => i.severity === "error"), concepts: concepts.length, issues };
+  }
+}
+
+/** True when the file starts with a front matter block. */
+function parseConcept0(text: string): boolean {
+  return text.replace(/\r\n/g, "\n").startsWith("---\n");
+}

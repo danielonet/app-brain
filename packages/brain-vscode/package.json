@@ -1,0 +1,178 @@
+{
+  "name": "brain-vscode",
+  "displayName": "App Brain",
+  "description": "Configure and watch the app-brain MCP server: knowledge base and docs generated from your code.",
+  "version": "0.0.0",
+  "private": true,
+  "publisher": "app-brain",
+  "license": "MIT",
+  "engines": { "vscode": "^1.101.0" },
+  "categories": ["Other", "AI"],
+  "icon": "media/icon.png",
+  "galleryBanner": { "color": "#0a2a6b", "theme": "dark" },
+  "main": "out/extension.js",
+  "activationEvents": ["onStartupFinished"],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "App Brain starts a local server that reads your code, so it only runs in trusted workspaces."
+    }
+  },
+  "contributes": {
+    "mcpServerDefinitionProviders": [
+      { "id": "brain.mcp", "label": "App Brain" }
+    ],
+    "viewsContainers": {
+      "activitybar": [{ "id": "brain", "title": "App Brain", "icon": "$(book)" }]
+    },
+    "views": {
+      "brain": [
+        { "id": "brain.review", "name": "Review Queue" },
+        { "id": "brain.activity", "name": "Agent Activity" }
+      ]
+    },
+    "commands": [
+      { "command": "brain.initialise", "title": "Brain: Initialise" },
+      { "command": "brain.start", "title": "Brain: Start Server" },
+      { "command": "brain.stop", "title": "Brain: Stop Server" },
+      { "command": "brain.reindex", "title": "Brain: Reindex Workspace" },
+      { "command": "brain.openSettings", "title": "Brain: Open Settings", "icon": "$(gear)" },
+      { "command": "brain.generateDocs", "title": "Brain: Generate Docs…", "icon": "$(sparkle)" },
+      { "command": "brain.cancelGeneration", "title": "Brain: Cancel Doc Generation" },
+      { "command": "brain.testLlm", "title": "Brain: Test LLM Connection" },
+      { "command": "brain.chooseLocalModel", "title": "Brain: Choose Local Model…" },
+      { "command": "brain.setApiKey", "title": "Brain: Set LLM API Key" },
+      { "command": "brain.clearApiKey", "title": "Brain: Clear LLM API Key" },
+      { "command": "brain.showCost", "title": "Brain: Show Cost & Models", "icon": "$(graph)" },
+      { "command": "brain.exportCostReport", "title": "Brain: Export Cost Report" },
+      { "command": "brain.showGraph", "title": "Brain: Show Dependency Graph", "icon": "$(type-hierarchy)" },
+      { "command": "brain.exportGraph", "title": "Brain: Export Graph (JSON-LD)" },
+      { "command": "brain.search", "title": "Brain: Search Symbols" },
+      { "command": "brain.validate", "title": "Brain: Validate Knowledge Bundle" },
+      { "command": "brain.review.open", "title": "Open Draft", "icon": "$(go-to-file)" },
+      { "command": "brain.review.approve", "title": "Approve", "icon": "$(check)" },
+      { "command": "brain.review.reject", "title": "Reject", "icon": "$(close)" },
+      { "command": "brain.openOutputFolder", "title": "Brain: Open Output Folder" },
+      { "command": "brain.showLogs", "title": "Brain: Show Server Logs" },
+      { "command": "brain.copyMcpConfig", "title": "Brain: Copy MCP Config for Claude Code" }
+    ],
+    "menus": {
+      "view/title": [
+        { "command": "brain.generateDocs", "when": "view == brain.review", "group": "navigation@0" },
+        { "command": "brain.showGraph", "when": "view == brain.review", "group": "navigation@1" },
+        { "command": "brain.showCost", "when": "view == brain.review", "group": "navigation@2" },
+        { "command": "brain.openSettings", "when": "view == brain.review", "group": "navigation@3" }
+      ],
+      "view/item/context": [
+        { "command": "brain.review.open", "when": "view == brain.review && viewItem == draft", "group": "inline@1" },
+        { "command": "brain.review.approve", "when": "view == brain.review && viewItem == draft", "group": "inline@2" },
+        { "command": "brain.review.reject", "when": "view == brain.review && viewItem == draft", "group": "inline@3" }
+      ],
+      "commandPalette": [
+        { "command": "brain.review.open", "when": "false" },
+        { "command": "brain.review.approve", "when": "false" },
+        { "command": "brain.review.reject", "when": "false" }
+      ]
+    },
+    "configuration": {
+      "title": "App Brain",
+      "properties": {
+        "brain.server.path": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Path to the `brain-mcp` entry point (`cli.js`). Empty uses the bundled server."
+        },
+        "brain.server.transport": {
+          "type": "string",
+          "enum": ["http", "stdio"],
+          "default": "http",
+          "enumDescriptions": [
+            "One shared server per workspace on 127.0.0.1, used by this editor and by agents (Claude Code, Cursor) through their usual stdio config. The index is built once, and you see what agents ask live.",
+            "A private server for this window only. Agents that run their own server index the code separately."
+          ],
+          "markdownDescription": "How this editor reaches the brain server. If the shared server cannot start, the editor falls back to a private one and says so."
+        },
+        "brain.server.nodePath": {
+          "type": "string",
+          "default": "node",
+          "markdownDescription": "Node.js executable used to run the server."
+        },
+        "brain.outputDir": {
+          "type": "string",
+          "default": ".brain",
+          "markdownDescription": "Output folder relative to the workspace root. Changing it needs a server restart and moving the existing folder."
+        },
+        "brain.llm.mode": {
+          "type": "string",
+          "enum": ["agent", "vscode-lm", "api-key", "local"],
+          "default": "agent",
+          "enumDescriptions": [
+            "The server writes nothing. Agents (Claude Code, Copilot, Cursor) write docs through save_summary. No key and no cost here.",
+            "The server asks this editor's language model (for example GitHub Copilot) to write docs. VS Code asks for your consent. Token counts are estimates.",
+            "The server calls the Claude API with your key. Exact token counts and costs. Your source code is sent to Anthropic.",
+            "The server calls a model running on your machine (Ollama, llama.cpp, LM Studio). Nothing leaves your computer."
+          ],
+          "markdownDescription": "Who writes documentation when you run **Brain: Generate Docs**. Every result is a draft that you review."
+        },
+        "brain.llm.model": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Model id. **api-key**: defaults to `claude-opus-5-5`; a smaller model costs much less per doc. **local**: required, for example `llama3.1`. **vscode-lm**: optional model family to prefer. Set its price under *Model prices and budget* to see dollars."
+        },
+        "brain.llm.local.preset": {
+          "type": "string",
+          "enum": ["ollama", "lm-studio", "llama-cpp", "custom"],
+          "default": "ollama",
+          "enumDescriptions": [
+            "Ollama on its default address, http://localhost:11434/v1.",
+            "LM Studio's local server, http://localhost:1234/v1.",
+            "llama.cpp's llama-server, http://localhost:8080/v1.",
+            "Any other OpenAI-compatible server. Set “brain.llm.baseUrl”."
+          ],
+          "markdownDescription": "**local** mode: which server runs your model, so its usual address is filled in. Run **Brain: Test LLM Connection** to check it."
+        },
+        "brain.llm.local.contextTokens": {
+          "type": "integer",
+          "default": 8192,
+          "minimum": 0,
+          "markdownDescription": "**local** mode: the context window your server runs the model with, in tokens. Prompts are sized to fit it; code that is too long is cut, and each doc says so. **Servers often default to a small window** (Ollama: 2 to 4K). Set it in the server too (Ollama: `OLLAMA_CONTEXT_LENGTH`, or `PARAMETER num_ctx` in a Modelfile), or the server will cut prompts off without telling anyone."
+        },
+        "brain.llm.local.maxOutputTokens": {
+          "type": "integer",
+          "default": 1500,
+          "minimum": 0,
+          "markdownDescription": "**local** mode: the most the model may write for one doc. Raise it for reasoning models that think before they answer."
+        },
+        "brain.llm.local.timeoutSeconds": {
+          "type": "integer",
+          "default": 600,
+          "minimum": 0,
+          "markdownDescription": "**local** mode: how long to wait for one doc. Local models can be slow, especially the first request while the model loads."
+        },
+        "brain.llm.baseUrl": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "**local**: your server's OpenAI-compatible URL. Leave empty to use the preset's usual address. If this is not on your machine, the confirmation dialog says where your code will go. **api-key**: leave empty unless you use an API gateway."
+        },
+        "brain.llm.effort": {
+          "type": "string",
+          "enum": ["", "low", "medium", "high", "xhigh", "max"],
+          "default": "",
+          "markdownDescription": "**api-key** only: how hard Claude thinks per doc. `low` is cheapest and is usually enough for documentation. Empty uses the model's default. Models that do not support it reject it, so leave it empty if a run fails with a 400."
+        },
+        "brain.registerWithCopilot": {
+          "type": "boolean",
+          "default": true,
+          "description": "Register the brain MCP server with VS Code so Copilot agent mode can use it."
+        }
+      }
+    }
+  },
+  "scripts": { "test": "node --test out/test/*.test.js" },
+  "dependencies": {
+    "@app-brain/brain-mcp": "0.0.0",
+    "@app-brain/brain-protocol": "0.0.0",
+    "@modelcontextprotocol/sdk": "^1.32.2"
+  },
+  "devDependencies": { "@types/vscode": "1.101.0" }
+}

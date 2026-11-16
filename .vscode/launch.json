@@ -1,0 +1,13 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Run App Brain extension",
+      "type": "extensionHost",
+      "request": "launch",
+      "args": ["--extensionDevelopmentPath=${workspaceFolder}/packages/brain-vscode"],
+      "outFiles": ["${workspaceFolder}/packages/brain-vscode/out/**/*.js"],
+      "preLaunchTask": "npm: build"
+    }
+  ]
+}

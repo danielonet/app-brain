@@ -218,3 +218,17 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# --- Node / TypeScript (brain packages) ---
+node_modules/
+out/
+*.tsbuildinfo
+*.vsix
+.vscode-test/
+
+# --- brain output that must never be committed (see PLAN-VSCODE-EXTENSION.md §5) ---
+.brain/.cache/
+.brain/drafts/
+.brain/graph/
+.brain/reports/
+.brain/site/

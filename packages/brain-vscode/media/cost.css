@@ -1,0 +1,123 @@
+/* Chart tokens: roles, not raw hex. Light and dark are separate selected steps (palette validated for both). */
+:root {
+  color-scheme: light;
+  /* mode defaults: used when VS Code's own theme variables are absent (and by the tests) */
+  --d-surface: #fcfcfb; --d-ink: #0b0b0b; --d-ink2: #52514e; --d-grid: #e1e0d9; --d-btn: #e5e5e5; --d-btn-ink: #222; --d-link: #0066b8; --d-tip: #ffffff;
+  --ink-3: #898781; --baseline: #c3c2b7;
+  --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a;           /* categorical slots 1-3 */
+  --seq: #2a78d6; --seq-track: #cde2fb;                     /* sequential blue */
+  --good: #0ca30c; --warning: #fab219; --critical: #d03b3b; /* status: always with an icon and a label */
+  --on-fill: #ffffff;
+}
+@media (prefers-color-scheme: dark) {
+  body:not(.vscode-light) {
+    color-scheme: dark;
+    --d-surface: #1a1a19; --d-ink: #f0efec; --d-ink2: #c3c2b7; --d-grid: #2c2c2a; --d-btn: #3a3a38; --d-btn-ink: #f0efec; --d-link: #3794ff; --d-tip: #252524;
+    --baseline: #383835; --s1: #3987e5; --s2: #d95926; --s3: #199e70; --seq: #3987e5; --seq-track: #184f95;
+  }
+}
+body.vscode-dark, body.vscode-high-contrast {
+  color-scheme: dark;
+  --d-surface: #1a1a19; --d-ink: #f0efec; --d-ink2: #c3c2b7; --d-grid: #2c2c2a; --d-btn: #3a3a38; --d-btn-ink: #f0efec; --d-link: #3794ff; --d-tip: #252524;
+  --baseline: #383835; --s1: #3987e5; --s2: #d95926; --s3: #199e70; --seq: #3987e5; --seq-track: #184f95;
+}
+/* roles: follow the VS Code theme when it is there, else the mode default above */
+body {
+  --surface: var(--vscode-editor-background, var(--d-surface));
+  --ink: var(--vscode-foreground, var(--d-ink));
+  --ink-2: var(--vscode-descriptionForeground, var(--d-ink2));
+  --grid: var(--vscode-panel-border, var(--d-grid));
+}
+
+html, body { margin: 0; }
+body { font-family: var(--vscode-font-family, system-ui, -apple-system, "Segoe UI", sans-serif); font-size: var(--vscode-font-size, 13px); color: var(--ink); background: var(--surface); padding: 0 24px 56px; }
+main { max-width: 980px; margin: 0 auto; }
+h1 { font-size: 1.5em; font-weight: 600; margin: 24px 0 2px; }
+h2 { font-size: 1.05em; font-weight: 600; margin: 0 0 2px; }
+.sub, .muted { color: var(--ink-2); }
+.sub { margin: 0 0 14px; }
+section.card { margin: 28px 0; }
+section.card > p.sub { margin: 0 0 10px; }
+button, select { font: inherit; }
+button { padding: 3px 12px; cursor: pointer; border-radius: 2px; border: 1px solid transparent; color: var(--vscode-button-secondaryForeground, var(--d-btn-ink)); background: var(--vscode-button-secondaryBackground, var(--d-btn)); }
+button.primary { color: var(--vscode-button-foreground, #fff); background: var(--vscode-button-background, #0066b8); }
+button.link { background: none; padding: 0; border: 0; color: var(--vscode-textLink-foreground, var(--d-link)); text-decoration: underline; }
+button[aria-pressed=true] { color: var(--vscode-button-foreground, #fff); background: var(--vscode-button-background, #0066b8); }
+:focus-visible { outline: 2px solid var(--vscode-focusBorder, #0066b8); outline-offset: 2px; }
+
+#actions { display: flex; flex-wrap: wrap; gap: 8px; }
+#toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 12px 0 4px; }
+#toolbar .seg { display: inline-flex; gap: 1px; }
+#toolbar .spacer { margin-left: auto; }
+
+.notice { display: flex; gap: 10px; padding: 8px 12px; margin: 14px 0; border-left: 4px solid var(--warning); background: var(--vscode-inputValidation-warningBackground, rgba(250,178,25,.12)); }
+.notice .icon { font-weight: 700; }
+.notice ul { margin: 4px 0 0 18px; padding: 0; }
+
+/* hero + stat tiles */
+.hero { font-size: 56px; line-height: 1.05; font-weight: 600; margin: 8px 0 0; }
+.hero-label { color: var(--ink-2); }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(128px, 1fr)); gap: 12px; margin: 16px 0 0; }
+.tile { padding: 10px 12px; border: 1px solid var(--grid); border-radius: 4px; }
+.tile .v { font-size: 1.6em; font-weight: 600; }
+.tile .l { color: var(--ink-2); }
+
+/* meter: the unfilled track is a lighter step of the same ramp; the fill carries severity */
+.meter { height: 10px; border-radius: 5px; background: var(--seq-track); overflow: hidden; margin: 8px 0 4px; }
+.meter > i { display: block; height: 100%; background: var(--seq); border-radius: 5px; }
+.meter.near > i { background: var(--warning); } .meter.exceeded > i { background: var(--critical); }
+.meter-label { display: flex; gap: 6px; align-items: center; }
+
+/* column chart */
+svg.chart { width: 100%; height: auto; display: block; overflow: visible; }
+svg.chart text { fill: var(--ink-3); font-size: 11px; }
+svg.chart .grid { stroke: var(--grid); stroke-width: 1; }
+svg.chart .axis { stroke: var(--baseline); stroke-width: 1; }
+svg.chart .bar { fill: var(--seq); }
+svg.chart .hit { fill: transparent; }
+svg.chart .col:hover .bar, svg.chart .col:focus-visible .bar { fill-opacity: .72; }
+svg.chart .col:focus-visible { outline: none; }
+svg.chart .col:focus-visible .hit { stroke: var(--vscode-focusBorder, #0066b8); stroke-width: 2; }
+svg.chart text.value { fill: var(--ink); font-weight: 600; text-anchor: middle; }
+svg.chart text.tick { text-anchor: end; } svg.chart text.xl { text-anchor: middle; }
+
+/* ranked horizontal bars (HTML, so every name is real text) */
+.rows { display: grid; grid-template-columns: minmax(120px, 220px) 1fr; gap: 6px 12px; align-items: center; }
+.rows .name { overflow-wrap: anywhere; }
+.rows .barwrap { display: flex; align-items: center; gap: 8px; min-height: 20px; }
+.rows .b { height: 12px; border-radius: 0 4px 4px 0; background: var(--seq); min-width: 2px; }
+.rows .barwrap:hover .b, .rows .barwrap:focus-visible .b { opacity: .72; }
+.rows .val { color: var(--ink); font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+/* tall segmented bar: one whole split into three parts */
+.segbar { display: flex; gap: 2px; height: 28px; }
+.segbar .part { border-radius: 4px; display: flex; align-items: center; padding-left: 8px; color: var(--on-fill); font-weight: 600; min-width: 0; white-space: nowrap; overflow: visible; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-top: 8px; color: var(--ink-2); }
+.legend .sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; }
+
+/* tables */
+.tablewrap { overflow-x: auto; max-width: 100%; }
+table { width: 100%; border-collapse: collapse; margin-top: 6px; }
+th { text-align: left; font-weight: 600; color: var(--ink-2); border-bottom: 1px solid var(--baseline); padding: 4px 10px 4px 0; }
+td { padding: 4px 10px 4px 0; border-bottom: 1px solid var(--grid); vertical-align: top; overflow-wrap: anywhere; }
+td.n, th.n { text-align: right; font-variant-numeric: tabular-nums; }
+details { margin-top: 8px; } summary { cursor: pointer; color: var(--vscode-textLink-foreground, var(--d-link)); }
+.flag { color: var(--ink); } .flag::before { content: "⚠ "; color: var(--warning); }
+.ok::before { content: "✓ "; color: var(--good); } .bad::before { content: "✕ "; color: var(--critical); }
+
+#tip { position: fixed; pointer-events: none; z-index: 10; padding: 6px 9px; border-radius: 4px; background: var(--vscode-editorHoverWidget-background, var(--d-tip)); color: var(--ink); border: 1px solid var(--vscode-editorHoverWidget-border, #ccc); box-shadow: 0 2px 8px rgba(0,0,0,.25); max-width: 300px; }
+#tip b { display: block; font-size: 1.1em; }
+#tip span { color: var(--ink-2); }
+#empty { margin: 48px 0; text-align: center; color: var(--ink-2); }
+[hidden] { display: none !important; }
+
+@media (forced-colors: active) {
+  svg.chart .bar, .rows .b, .meter > i { fill: Highlight; background: Highlight; forced-color-adjust: none; }
+  .segbar .part { border: 2px solid CanvasText; background: Canvas !important; color: CanvasText; }
+}
+
+@media (max-width: 480px) {
+  body { padding: 0 16px 40px; }
+  .hero { font-size: 44px; }
+  .rows { grid-template-columns: 1fr; gap: 2px 0; } .rows .name { margin-top: 8px; }
+}

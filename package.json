@@ -1,0 +1,17 @@
+{
+  "name": "app-brain",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Generate application context (a knowledge base) out of a code base",
+  "workspaces": ["packages/*"],
+  "scripts": {
+    "build": "tsc -b packages/brain-protocol packages/brain-mcp packages/brain-vscode",
+    "test": "npm run build && npm test --workspaces --if-present",
+    "clean": "tsc -b --clean packages/brain-protocol packages/brain-mcp packages/brain-vscode"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "~5.9.3"
+  },
+  "engines": { "node": ">=22.13" }
+}

@@ -66,7 +66,15 @@ The extension talks to the server with the same protocol agents use. This avoids
 | **A. stdio, one process per client** | The extension spawns its own `brain-mcp`. Claude Code and others spawn theirs. All share `.brain/.cache/brain.db` (SQLite WAL). | Simple. Matches how every MCP client already works. | Several server processes per workspace. Each one must coordinate writes. The extension cannot see what another client's server is doing. |
 | **B. one local daemon, HTTP on `127.0.0.1`** | The extension starts (or attaches to) a single `brain-mcp` per workspace and publishes its URL. Agents connect to the same URL. | One indexer, one writer, and the extension sees agent usage live. | Needs a port, a token and a lock file. Not every client supports HTTP MCP yet. |
 
-**Recommendation:** build the server to support both. Ship **B as the default in VS Code** (the extension owns the daemon, the lock file is `.brain/.cache/server.json` with `{pid, port, token}`), and keep **A** for terminal use without VS Code. When a stdio server starts and finds a live daemon, it proxies to it instead of indexing a second time.
+**Recommendation (built):** support both. **B is the default in VS Code**, and **A** remains for terminal use without VS Code. When a stdio server starts and finds a live daemon it proxies to it instead of indexing a second time. How it works, and where it differs from the first draft of this plan:
+
+- **Agents keep a stable config.** Claude Code, Cursor and Copilot still run `brain-mcp` as a stdio command, with no token and no port in any file. If a daemon is live, that process becomes a thin proxy to it; if not, it runs on its own as before. (Pointing an agent straight at the HTTP URL would put a token that changes at every start into a config file that is often committed.)
+- **One lock, one daemon.** `brain-mcp --daemon` takes a lock and refuses to start twice; a crashed daemon's leftovers are detected (dead pid, failed health check) and replaced.
+- **Runtime files are outside the workspace.** `server.json` and the lock live in a per-user directory (`~/.cache/app-brain/run/<workspace-hash>/` on Linux, the platform equivalents elsewhere), not in `.brain/.cache/`. Writing `.brain/` before the user runs "Initialise" would break the promise that nothing is written until then.
+- **Two tokens, and only one of them is in a file.** `server.json` (mode `0600`) holds an *agent token* only. Anything running as you can read that file, so the *admin token* is never in it: the extension keeps it in VS Code secret storage and gives it to the daemon on stdin. The same goes for the LLM API key. Neither is in the command line or the environment, so neither is visible in `ps` or `/proc/<pid>/environ`.
+- **Sessions, not a single connection.** Each client gets its own MCP session (own admin flag, own subscriptions, own client name for the usage log) over one shared core. A client that disappears without the protocol's DELETE is dropped when its notification stream has stayed closed for a grace period.
+- **Lifecycle.** The extension attaches to a live daemon or spawns a detached one; replaces it if the LLM settings or key changed (they travel only at start-up); stops it when it closes if it was the only client, and leaves it running for agents or another window otherwise. The daemon also exits by itself after ten minutes with nobody connected.
+- **Fallback.** If the daemon cannot start, the extension uses a private stdio server for that window and says why.
 
 ---
 
@@ -239,7 +247,7 @@ All output lives under **one root folder at the workspace root: `.brain/`**. It 
     ├── site/                    # static markdown/HTML export          [gitignored]
     ├── .cache/                  #                                      [gitignored]
     │   ├── brain.db             #   SQLite: graph, FTS, embeddings, llm_call, usage log
-    │   ├── server.json          #   {pid, port, token} for the running daemon
+    │   ├── (server.json and the daemon lock are in a per-user runtime directory, not here; see §2)
     │   └── logs/
     └── .gitignore               # written by the server, covers the ignored paths above
 ```
@@ -351,13 +359,52 @@ The graph is the point of choosing OKF, so its construction is explicit.
 
 1. Find the workspace root and read `.brain/config.json` (absent → offer **Brain: Initialise**, which asks the server to create it with defaults and write `.brain/.gitignore`).
 2. Resolve the server: bundled build, a user-set path, or `npx`-style install. Check its version against the extension's required protocol version. On mismatch, show a clear upgrade message and do not connect.
-3. Read `.brain/.cache/server.json`. If a live daemon exists (pid alive, health check passes), attach. Otherwise spawn one.
+3. Read `server.json` from the per-user runtime directory (§2). If a live daemon exists (pid alive, authenticated health check passes, same LLM settings and output folder), attach. Otherwise replace or spawn one, handing it the admin token and any API key on stdin.
 4. Connect as an MCP client, call `brain_admin_hello` to declare itself the extension and receive the admin tool set.
 5. Subscribe to `brain://status` and `brain://coverage`; draw the status bar and views.
 6. On a crash, restart with backoff (3 tries), then show an error in the status bar with a **Show Logs** action.
 7. On deactivate, leave the daemon running only if other clients are attached; otherwise stop it.
 
 **LLM modes.** In `agent` mode the server offers `list_undocumented` / `save_summary` to agents and the extension only displays progress. In `vscode-lm` mode the server asks the extension, over an MCP sampling-style request, to run the prompt through VS Code's `vscode.lm` API and return the text, because only the extension can reach that API. `api-key` and `local` modes run entirely in the server.
+
+
+### 6.1 Configuring a local LLM
+
+`local` mode runs doc generation on a model the user hosts (Ollama, LM Studio, llama.cpp's `llama-server`, or any server that speaks the OpenAI chat-completions protocol). It is the answer to "my code must not leave my machine" and to "I do not want a bill", but it fails in ways a paid API does not, so the design treats configuration as more than a URL and a model name.
+
+**What the person configures** (VS Code settings, personal, never committed):
+
+| Setting | Default | Why it exists |
+|---|---|---|
+| `brain.llm.mode` = `local` | `agent` | Selects the mode. Nothing is sent anywhere until the user chooses one |
+| `brain.llm.local.preset` | `ollama` | Fills in the server's usual address: Ollama `:11434`, LM Studio `:1234`, llama.cpp `:8080`, or `custom` |
+| `brain.llm.baseUrl` | empty | Overrides the preset's address (a GPU box on the network, a non-default port) |
+| `brain.llm.model` | required | The model id. **Brain: Choose Local Model** lists what the server actually has, so it is picked, not typed |
+| `brain.llm.local.contextTokens` | 8192 | The context window the server runs the model with. See below |
+| `brain.llm.local.maxOutputTokens` | 1500 | The most the model may write for one doc. Reasoning models need more |
+| `brain.llm.local.timeoutSeconds` | 600 | Local models are slow, and the first request loads the model |
+
+**The context window is the central problem.** Hosted models take hundreds of thousands of tokens. Local servers commonly run a model with 2 to 4K, and the OpenAI-compatible endpoint does not let a client change it. A prompt that is too long is then cut off *by the server, silently*, and the model writes confidently about a file it only half saw. So the generator never relies on the server:
+
+- Every prompt is sized to `contextTokens`, leaving room for the answer (`maxOutputTokens`), the fixed part (rules, symbol list, relationships) and slack for tokenizers that need more tokens per character than our estimate.
+- A source file too long for what is left is cut in the middle, and the doc records `input_truncated: true` in its front matter. A module's long file list is trimmed with a visible "(and N more not shown)". Nothing is cut without being said.
+- A file that would get no usable amount of its code is **skipped and reported with the reason**, never sent as an empty shell. If nothing fits, or the window is below 2,048 tokens, generation does not start and says which setting to change.
+- The estimate warns how many documents will be written from partial input and how many will be skipped, before the person confirms.
+- The window setting only tells *us* what to do; the server must really run the model with that window. The test (below) and the settings text say so, with the Ollama specifics (`OLLAMA_CONTEXT_LENGTH`, or `PARAMETER num_ctx` in a Modelfile).
+
+**"Local" is a URL, and a URL can point anywhere.** The interface must not say "nothing leaves this machine" for a URL that is not on it. The URL is classified (the whole address, not a prefix: `127.0.0.1.evil.com` is the internet):
+
+| Where it points | What the confirmation says | Cost |
+|---|---|---|
+| This machine (`localhost`, `127.x`, `::1`) | "Runs on this machine; nothing leaves it." | Free |
+| Your network (private ranges, `.local`, single-label names) | "Sends your source code to *host* on your network", with "unencrypted" for `http` | Free |
+| The internet | "Sends your source code over the internet to *host*. This is not a local model." (`UNENCRYPTED` for `http`) | **Not assumed free**: priced from the price table like any paid API, and a budget cap cannot start without a price |
+
+**Knowing it works, and why not.** **Brain: Test LLM Connection** runs a one-word request and, for a local server, asks it which models it has. It reports where the code goes, the latency, the token counts, and for every failure a cause and a next step: server not running (with the command to start the one the port suggests), model not pulled (listing what is there, matching Ollama's `:latest` naming), window too small, a URL on the network or internet, a reasoning model that spent its tiny test allowance thinking (not a broken connection). It costs nothing locally and a fraction of a cent on a paid API. The same checks run as a pre-flight when settings are obviously wrong (no model, `custom` without a URL, a window under the minimum).
+
+**Boundaries.** Only the extension may test or list models (admin tools); an agent cannot probe the user's LLM. The API key, if a local gateway needs one, travels like any other secret (stdin to the daemon, never a file). Changing any of these settings replaces the shared daemon, because they are part of its start-up fingerprint.
+
+**Open:** tool use, streaming and structured output are not used, so any chat-completions server works; but quality varies a great deal by model, and the plan makes no claim about which local model is good enough. The cost report marks local calls as free and token counts as reported by the server when it reports usage, else estimated.
 
 ---
 
@@ -379,7 +426,9 @@ packages/
 
 ## 8. Security and privacy
 
-- **HTTP transport binds to `127.0.0.1` only** and requires a random bearer token generated at daemon start, stored in `.brain/.cache/server.json` with file mode `0600`. No token, no connection.
+- **HTTP transport binds to `127.0.0.1` only** and requires a random bearer token generated at daemon start, stored in `server.json` (mode `0600`, in a per-user directory outside the workspace). No token, no connection. A request must also carry our own `Host` (a defence against DNS rebinding), must come from a loopback peer, and must not carry an `Origin` header: a web page is never a client. Bodies are capped at 4 MB and sessions at 64.
+- **The token in `server.json` is the agent token.** It lets a client call the read-only tools and nothing else. Anything running as the same user can read it, which is accepted: it grants no more than reading the code would.
+- **The admin token and the API key are never in a file, the environment or the command line.** They are passed on stdin and held in memory. The limit of this: an agent that is itself malicious, running as you with a shell, can still read another process's memory. The design stops accidents and prompt-injected tools, not a hostile process that already is you.
 - **Admin tools are gated.** `brain_admin_*` tools work only for a client that presents the admin token. Agents get the read-only agent tool set, so an agent cannot approve its own summaries or change config.
 - **No secrets on disk in the repo.** API keys live in `SecretStorage` and are passed to the server by environment variable when it is spawned.
 - **Never indexed, regardless of config:** `.env*`, key and certificate files, anything matching the secret-file patterns, and everything in `.gitignore` unless explicitly included.
