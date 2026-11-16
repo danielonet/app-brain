@@ -16,6 +16,8 @@ import { tool } from "./helpers";
 
 const linux = process.platform === "linux";
 
+const WINDOWS = process.platform === "win32";
+
 describe("request checks", () => {
   it("accepts only our own host name on our own port", () => {
     assert.equal(isAllowedHost("127.0.0.1:4000", 4000), true);
@@ -42,11 +44,12 @@ describe("where the runtime files live, and who may read them", () => {
     assert.notEqual(a, b);
     assert.equal(a, runtimeDir("/work/a/", {}), "a trailing slash is the same workspace");
     assert.equal(path.dirname(a), runtimeBase({}));
-    assert.equal(runtimeBase({ BRAIN_RUNTIME_DIR: "/custom/dir" }), "/custom/dir");
+    assert.equal(runtimeBase({ BRAIN_RUNTIME_DIR: "/custom/dir" }), path.resolve("/custom/dir"));
     assert.match(workspaceKey("/work/a"), /^[0-9a-f]{16}$/);
     assert.ok(!a.startsWith("/work/a"), "never inside the workspace: that would create .brain before init");
   });
-  it("makes the directory private, repairs one that is too open, and refuses a symlink", () => {
+  // Windows has no POSIX modes (access is by the profile's ACL) and symlinks need privileges.
+  it("makes the directory private, repairs one that is too open, and refuses a symlink", { skip: WINDOWS && "POSIX permissions" }, () => {
     const base = path.join(os.tmpdir(), `brain-rt-${process.pid}-${Date.now()}`);
     try {
       mkdirSync(base);
@@ -61,14 +64,14 @@ describe("where the runtime files live, and who may read them", () => {
       const link = path.join(base, "link");
       symlinkSync(target, link);
       assert.throws(() => ensureRuntimeDir(link), /not a plain directory/);
-    } finally { rmSync(base, { recursive: true, force: true }); }
+    } finally { rmSync(base, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 }); }
   });
   it("writes server.json privately and atomically, and rejects a malformed one", async () => {
     const dir = ensureRuntimeDir(path.join(os.tmpdir(), `brain-rt2-${process.pid}-${Date.now()}`));
     try {
       const info = { pid: process.pid, port: 4000, url: "http://127.0.0.1:4000/mcp", agentToken: "t".repeat(43), version: "0", protocolVersion: "0.2", startedAt: "x", workspace: "/w", outputDir: ".brain", llmFingerprint: "f" };
       await writeDaemonInfo(dir, info);
-      assert.equal(statSync(path.join(dir, DAEMON_INFO_FILE)).mode & 0o777, 0o600);
+      if (!WINDOWS) assert.equal(statSync(path.join(dir, DAEMON_INFO_FILE)).mode & 0o777, 0o600);
       assert.deepEqual(await readDaemonInfo(dir), info);
       assert.deepEqual(readdirSync(dir), [DAEMON_INFO_FILE], "no temp file left behind");
       writeFileSync(path.join(dir, DAEMON_INFO_FILE), "{ not json");
@@ -76,7 +79,7 @@ describe("where the runtime files live, and who may read them", () => {
       writeFileSync(path.join(dir, DAEMON_INFO_FILE), JSON.stringify({ ...info, agentToken: "short" }));
       assert.equal(await readDaemonInfo(dir), null, "a token that short is not accepted");
       assert.equal(DaemonInfoSchema.safeParse({ ...info, port: 0 }).success, false);
-    } finally { rmSync(dir, { recursive: true, force: true }); }
+    } finally { rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 }); }
   });
   it("tells a live pid from a dead one, and never calls a dead daemon healthy", async () => {
     assert.equal(pidAlive(process.pid), true);
@@ -104,7 +107,7 @@ describe("the daemon", () => {
     try {
       assert.ok(d.info, d.stderr());
       const file = path.join(runtimeDir(e.ws, e.env), DAEMON_INFO_FILE);
-      assert.equal(statSync(file).mode & 0o777, 0o600);
+      if (!WINDOWS) assert.equal(statSync(file).mode & 0o777, 0o600);
       assert.equal(new URL(d.info.url).hostname, "127.0.0.1");
       assert.equal(d.info.pid, d.child.pid);
       assert.equal(d.info.workspace, e.ws);
@@ -366,7 +369,8 @@ describe("the daemon", () => {
     } finally { b.kill(); await b.exit; e.cleanup(); }
   });
 
-  it("cleans up when stopped, and only removes its own file", async () => {
+  // On Windows SIGTERM ends a process at once, so nothing runs to clean up; the editor removes the file itself.
+  it("cleans up when stopped, and only removes its own file", { skip: WINDOWS && "SIGTERM is a hard kill" }, async () => {
     const e = setup();
     const d = await startDaemonProc(e);
     const dir = runtimeDir(e.ws, e.env);

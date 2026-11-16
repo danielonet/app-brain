@@ -60,8 +60,8 @@ describe("dependency graph webview, in a real browser, with real graph data", { 
   after(async () => {
     await browser?.close();
     await client?.stop();
-    rmSync(ws, { recursive: true, force: true });
-    rmSync(outDir, { recursive: true, force: true });
+    rmSync(ws, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
+    rmSync(outDir, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
   });
 
   async function open(graph: Graph, size = { width: 1200, height: 800 }) {

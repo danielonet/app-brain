@@ -44,8 +44,8 @@ afterEach(async () => {
     const info = await readDaemonInfo(runtimeDir(s.ws, s.env));
     if (info) s.pids.add(info.pid);
     for (const pid of s.pids) { try { process.kill(pid, "SIGKILL"); } catch { /* gone */ } }
-    rmSync(s.ws, { recursive: true, force: true });
-    rmSync(s.runtime, { recursive: true, force: true });
+    rmSync(s.ws, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
+    rmSync(s.runtime, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
   }
 });
 

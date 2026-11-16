@@ -175,7 +175,7 @@ describe("the extension's client drives generation on the real server", () => {
     execFileSync("git", ["init", "-q"], { cwd: ws });
     fake = await startFakeLlm((r: any) => ({ json: anthropicOk(docFor(r), { in: 1000, out: 200 }) }));
   });
-  after(async () => { await fake.close(); rmSync(ws, { recursive: true, force: true }); });
+  after(async () => { await fake.close(); rmSync(ws, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 }); });
 
   const client = (extra: Partial<ConstructorParameters<typeof BrainClient>[0]> = {}, seen: GenerationState[] = []) => new BrainClient({
     nodePath: process.execPath, serverPath: require.resolve("@app-brain/brain-mcp/out/cli.js"), workspace: ws, outputDir: ".brain",
@@ -216,7 +216,7 @@ describe("the extension's client drives generation on the real server", () => {
   });
 
   it("answers the server's prompts with a sampling handler, and declares that it can only when it has one", async () => {
-    rmSync(path.join(ws, ".brain", "drafts"), { recursive: true, force: true }); // the previous test left drafts behind
+    rmSync(path.join(ws, ".brain", "drafts"), { recursive: true, force: true, maxRetries: 20, retryDelay: 250 }); // the previous test left drafts behind
     const asked: any[] = [];
     const c = client({
       env: llmEnv(settings({ mode: "vscode-lm", model: "editor-model" }), undefined),

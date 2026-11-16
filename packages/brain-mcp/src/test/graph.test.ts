@@ -38,7 +38,7 @@ describe("dependency graph and overview", () => {
   });
   after(async () => {
     await c.close();
-    rmSync(ws, { recursive: true, force: true });
+    rmSync(ws, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
   });
 
   it("module level: directories as nodes, aggregated edges, circular dependencies flagged", async () => {

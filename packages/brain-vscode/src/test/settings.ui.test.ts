@@ -48,8 +48,8 @@ describe("settings webview, in a real browser, against the real server", { skip:
   after(async () => {
     await browser?.close();
     await client?.stop();
-    rmSync(ws, { recursive: true, force: true });
-    rmSync(outDir, { recursive: true, force: true });
+    rmSync(ws, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
+    rmSync(outDir, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
   });
 
   /** Opens a fresh page, with a stub for VS Code's webview API that records posted messages. */

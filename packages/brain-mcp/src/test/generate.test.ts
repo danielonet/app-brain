@@ -49,7 +49,7 @@ async function scenario(o: { handler?: Handler; extraFiles?: Record<string, stri
       }
       throw new Error("job did not finish: " + JSON.stringify(await readJson(admin, Resources.generation)).slice(0, 400));
     },
-    async close() { await admin.close(); await fake.close(); rmSync(ws, { recursive: true, force: true }); },
+    async close() { await admin.close(); await fake.close(); rmSync(ws, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 }); },
   };
   if (o.priced !== false) await s.configure({});
   return s;
@@ -77,7 +77,7 @@ describe("server-side doc generation", () => {
       assert.equal(est.canStart, false);
       assert.match(est.blocked, /Server-side generation is off/);
       assert.equal((await tool(c, AdminTools.generateDocs, { confirm: true })).isError, true);
-    } finally { await c.close(); rmSync(ws, { recursive: true, force: true }); }
+    } finally { await c.close(); rmSync(ws, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 }); }
   });
 
   it("explains a missing key, and never echoes one", async () => {
@@ -89,7 +89,7 @@ describe("server-side doc generation", () => {
       assert.equal(st.llm.ready, false);
       assert.match(st.llm.problem, /Set LLM API Key/);
       assert.equal(st.llm.model, "claude-opus-5-5", "the default model");
-    } finally { await c.close(); rmSync(ws, { recursive: true, force: true }); }
+    } finally { await c.close(); rmSync(ws, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 }); }
   });
 
   it("estimates before spending: nothing is called, numbers are labelled estimates, and the plan is bottom-up", async () => {
@@ -556,7 +556,7 @@ describe("server-side doc generation", () => {
       assert.equal(st.llm.ready, false);
       assert.match(st.llm.problem, /cannot run prompts/);
       assert.equal((await tool(c, AdminTools.generateDocs, { confirm: true })).isError, true);
-    } finally { await c.close(); rmSync(ws, { recursive: true, force: true }); }
+    } finally { await c.close(); rmSync(ws, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 }); }
   });
 
   it("recovers when the model's answer is empty or unusable", async () => {

@@ -238,7 +238,7 @@ describe("local generation on a server that can only take so much", () => {
     await ready(admin, 4 + Object.keys(o.extra ?? {}).length);
     await tool(admin, AdminTools.init);
     const job = async () => { for (let i = 0; i < 300; i++) { const s = await readJson(admin, Resources.generation); if (["done", "stopped", "failed"].includes(s.state)) return s; await new Promise((r) => setTimeout(r, 50)); } throw new Error("job never finished"); };
-    return { fake, ws, admin, job, close: async () => { await admin.close(); await fake.close(); rmSync(ws, { recursive: true, force: true }); } };
+    return { fake, ws, admin, job, close: async () => { await admin.close(); await fake.close(); rmSync(ws, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 }); } };
   }
 
   it("blocks a window that is too small to document anything, and says what to change", async () => {

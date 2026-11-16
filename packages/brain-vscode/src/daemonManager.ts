@@ -53,7 +53,8 @@ export async function stopDaemon(info: DaemonInfo, env: NodeJS.ProcessEnv | unde
   if (!pidAlive(info.pid)) return;
   log(`stopping daemon pid ${info.pid}`);
   try { process.kill(info.pid, "SIGTERM"); } catch { /* already gone */ }
-  if (await waitUntilGone(info.pid, 5000)) return;
+  // On Windows SIGTERM ends the process outright, so it cannot remove its own file; remove it here (only if it is this pid's).
+  if (await waitUntilGone(info.pid, 5000)) { await removeDaemonInfo(runtimeDir(info.workspace, env), info.pid); return; }
   log(`daemon pid ${info.pid} ignored SIGTERM; killing it`);
   try { process.kill(info.pid, "SIGKILL"); } catch { /* gone */ }
   await waitUntilGone(info.pid, 2000);
