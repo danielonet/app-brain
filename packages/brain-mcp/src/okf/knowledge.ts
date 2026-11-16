@@ -4,6 +4,7 @@ import * as path from "node:path";
 import {
   Coverage, DocKind, DocStatus, PendingItem, ReviewResult, TrustTier, ValidationIssue, ValidationResult,
 } from "@app-brain/brain-protocol";
+import { callCost } from "../cost";
 import type { DocIndex } from "./graph";
 import type { BrainStore } from "../store";
 import type { BrainWorkspace } from "../workspace";
@@ -277,7 +278,75 @@ export class Knowledge {
     return { total: rows.length, results: page, ...(next < rows.length ? { next_offset: next } : {}) };
   }
 
+  // ---- what the generator needs ------------------------------------------------------
+
+  /**
+   * Targets to write docs for, in the order to write them: files by how many files import them, then
+   * modules from the deepest up, so a module's prompt can read the summaries of what it contains.
+   */
+  async plan(scope: { kind: "file" | "module" | "both"; under?: string; includeStale: boolean; limit?: number }) {
+    const { states, targets } = await this.states();
+    const under = scope.under ? cleanTarget(scope.under) : undefined;
+    const inScope = (t: Target) => under === undefined || under === "." || t.target === under || t.target.startsWith(under + "/");
+    const picked: { target: Target; reason: "none" | "stale" | "draft-outdated" }[] = [];
+    for (const t of targets) {
+      if ((scope.kind !== "both" && t.kind !== scope.kind) || !inScope(t)) continue;
+      const s = states.get(`${t.kind}:${t.target}`)!;
+      const reviewedFresh = s.reviewed && Knowledge.builtFrom(s.reviewed) === t.hash;
+      const draftFresh = s.draft && Knowledge.builtFrom(s.draft) === t.hash;
+      if (reviewedFresh || draftFresh) continue;
+      const reason = s.reviewed ? "stale" : s.draft ? "draft-outdated" : "none";
+      if (reason === "stale" && !scope.includeStale) continue;
+      picked.push({ target: t, reason });
+    }
+    const depth = (p: string) => (p === "." ? 0 : p.split("/").length);
+    picked.sort((a, b) => {
+      if (a.target.kind !== b.target.kind) return a.target.kind === "file" ? -1 : 1;
+      if (a.target.kind === "module") return depth(b.target.target) - depth(a.target.target) || b.target.importedBy - a.target.importedBy || a.target.target.localeCompare(b.target.target);
+      return b.target.importedBy - a.target.importedBy || b.target.symbols - a.target.symbols || a.target.target.localeCompare(b.target.target);
+    });
+    return scope.limit ? picked.slice(0, scope.limit) : picked;
+  }
+
+  /** One-line description of a target's doc (reviewed, else draft), for another target's prompt. */
+  async describe(kind: DocKind, target: string): Promise<string | null> {
+    const cp = conceptPathFor(kind, target);
+    for (const area of ["knowledge", "drafts"] as const) {
+      if (!(await this.bundle.exists(area, cp))) continue;
+      const c = await this.bundle.read(area, cp);
+      if ("fm" in c && isNonEmptyString(c.fm.description)) return c.fm.description;
+    }
+    return null;
+  }
+
+  /** What reviewers said about earlier attempts at this target (newest last), so the next attempt can use it. */
+  async feedbackFor(target: string, max = 3): Promise<string[]> {
+    let text: string;
+    try {
+      text = await fs.readFile(this.ws.abs("feedback", "feedback.jsonl"), "utf8");
+    } catch {
+      return [];
+    }
+    const notes: string[] = [];
+    for (const line of text.split("\n")) {
+      try {
+        const e = JSON.parse(line) as { target?: string; action?: string; note?: unknown };
+        if (e.target === target && (e.action === "reject" || e.action === "approve-edited") && typeof e.note === "string" && e.note.trim()) {
+          notes.push((e.action === "reject" ? "Rejected: " : "Approved after edits: ") + e.note.trim().slice(0, 500));
+        }
+      } catch { /* a torn line is not worth failing for */ }
+    }
+    return notes.slice(-max);
+  }
+
   // ---- save_summary -------------------------------------------------------------------
+
+  /** Module-level or file-level neighbours as plain paths, for prompts. */
+  dependencyTargets(t: Target): { dependsOn: string[]; usedBy: string[] } {
+    const d = this.dependencies(t);
+    const clean = (c: string) => c.replace(/\.md$/, "").replace(/^(files|modules)\//, "").replace(/^_root$/, ".");
+    return { dependsOn: d.dependsOn.map(clean), usedBy: d.usedBy.map(clean) };
+  }
 
   private dependencies(t: Target): { dependsOn: string[]; usedBy: string[] } {
     const store = this.store();
@@ -304,7 +373,12 @@ export class Knowledge {
   async saveSummary(a: {
     target: string; kind?: DocKind; description: string; summary: string; model: string;
     tokensIn?: number; tokensOut?: number; tags?: string[]; client: string;
-  }): Promise<{ target: string; kind: DocKind; draft: string; conceptPath: string }> {
+    /** Set when the server itself called the model: exact usage replaces what an agent would report. */
+    generation?: {
+      mode: "api-key" | "local" | "vscode-lm"; provider: string; tokensIn: number | null; tokensOut: number | null; cachedTokens: number | null;
+      tokensSource: "provider-reported" | "agent-reported" | "estimated"; inputTruncated?: boolean; redactions?: number;
+    };
+  }): Promise<{ target: string; kind: DocKind; draft: string; conceptPath: string; costUsd: number | null }> {
     if (a.summary.length > MAX_SUMMARY) throw new Error(`Summary is too long (${a.summary.length} characters, max ${MAX_SUMMARY}). Summarise more tightly.`);
     const description = a.description.replace(/\s+/g, " ").trim();
     if (!description) throw new Error("description is required: one sentence saying what this code is for.");
@@ -321,10 +395,13 @@ export class Knowledge {
     const partOf = t.target === "." ? undefined : linkTo(moduleConcept(dirOf(t.target)));
 
     const cfg = await this.ws.readConfig();
-    const price = cfg.pricing[model];
-    const tokensOut = a.tokensOut ?? Math.ceil(a.summary.length / 4);
-    const tokensSource = a.tokensOut !== undefined || a.tokensIn !== undefined ? "agent-reported" : "estimated";
-    const cost = price && a.tokensIn !== undefined ? (a.tokensIn * price.inputPerMtok + tokensOut * price.outputPerMtok) / 1e6 : null;
+    const g = a.generation;
+    const tokensIn = g ? g.tokensIn : (a.tokensIn ?? null);
+    const tokensOut = g ? (g.tokensOut ?? Math.ceil(a.summary.length / 4)) : (a.tokensOut ?? Math.ceil(a.summary.length / 4));
+    const tokensSource = g ? g.tokensSource : a.tokensOut !== undefined || a.tokensIn !== undefined ? "agent-reported" : "estimated";
+    const mode = g?.mode ?? "agent";
+    // A local model costs no money; everything else is priced from the table, or left unknown.
+    const cost = mode === "local" ? 0 : callCost(cfg.pricing, model, { inputTokens: tokensIn, outputTokens: tokensOut, cachedTokens: g?.cachedTokens });
 
     let lastModified: string | undefined;
     if (t.kind === "file") lastModified = (await fs.stat(abs)).mtime.toISOString();
@@ -345,10 +422,13 @@ export class Knowledge {
         built_from_hash: t.hash,
         ...(partOf ? { part_of: partOf } : {}),
         depends_on: dependsOn.map(linkTo),
+        ...(g?.inputTruncated ? { input_truncated: true } : {}),
+        ...(g?.redactions ? { redactions: g.redactions } : {}),
         llm: {
           model,
-          mode: "agent",
-          tokens_in: a.tokensIn ?? null,
+          mode,
+          ...(g ? { provider: g.provider } : {}),
+          tokens_in: tokensIn,
           tokens_out: tokensOut,
           cost_usd: cost,
           tokens_source: tokensSource,
@@ -359,12 +439,12 @@ export class Knowledge {
     await this.bundle.write("drafts", conceptPath, fm, body);
 
     this.store().logLlmCall({
-      target: t.target, kind: t.kind, provider: null, model, mode: "agent",
-      inputTokens: a.tokensIn ?? null, outputTokens: tokensOut, tokensSource,
-      costUsd: cost, costSource: cost === null ? null : "price-table", outcome: "generated",
+      target: t.target, kind: t.kind, provider: g?.provider ?? null, model, mode,
+      inputTokens: tokensIn, outputTokens: tokensOut, cachedTokens: g?.cachedTokens ?? null, tokensSource,
+      costUsd: cost, costSource: cost === null ? null : mode === "local" ? "local" : "price-table", outcome: "generated",
     });
     this.changed();
-    return { target: t.target, kind: t.kind, draft: this.bundle.rel("drafts", conceptPath), conceptPath };
+    return { target: t.target, kind: t.kind, draft: this.bundle.rel("drafts", conceptPath), conceptPath, costUsd: cost };
   }
 
   // ---- review ------------------------------------------------------------------------------

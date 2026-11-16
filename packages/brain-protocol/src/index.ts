@@ -20,6 +20,7 @@ export const Resources = {
   pendingReview: "brain://knowledge/pending-review",
   coverage: "brain://coverage",
   costSummary: "brain://cost/summary",
+  generation: "brain://generation",
 } as const;
 
 /** Read-only tools for agents. Available to every client, no admin token. */
@@ -48,9 +49,28 @@ export const AdminTools = {
   validate: "brain_admin_validate",
   exportGraph: "brain_admin_export_graph",
   exportCostReport: "brain_admin_export_cost_report",
+  estimateGeneration: "brain_admin_estimate_generation",
+  generateDocs: "brain_admin_generate_docs",
+  cancelGeneration: "brain_admin_cancel_generation",
 } as const;
 
 export const ENV_ADMIN_TOKEN = "BRAIN_ADMIN_TOKEN";
+
+/**
+ * Where the server gets an LLM for doc generation. Personal choices (and the key), so they travel as
+ * environment variables from the extension, never through the committed team config.
+ */
+export const ENV_LLM_MODE = "BRAIN_LLM_MODE";
+export const ENV_LLM_MODEL = "BRAIN_LLM_MODEL";
+export const ENV_LLM_BASE_URL = "BRAIN_LLM_BASE_URL";
+export const ENV_LLM_API_KEY = "BRAIN_LLM_API_KEY";
+export const ENV_LLM_EFFORT = "BRAIN_LLM_EFFORT";
+
+/** `agent`: no server-side generation, agents write docs. `vscode-lm`: the editor's models, over MCP sampling. */
+export const LLM_MODES = ["agent", "vscode-lm", "api-key", "local"] as const;
+export type LlmMode = (typeof LLM_MODES)[number];
+export const DEFAULT_ANTHROPIC_MODEL = "claude-opus-5-5";
+export const DEFAULT_LOCAL_BASE_URL = "http://localhost:11434/v1";
 export const ENV_WORKSPACE = "BRAIN_WORKSPACE";
 
 // ---------------------------------------------------------------------------
@@ -74,8 +94,8 @@ export const ConfigSchema = z
           .enum(["symbol", "file", "module", "architecture-only"])
           .describe("How finely code is documented: per symbol, per file, per module, or only an architecture overview.")
           .default("module"),
-        autoGenerate: z.boolean().describe("Generate docs automatically after indexing, instead of only on request.").default(false),
-        maxCostUsd: z.number().nonnegative().nullable().describe("Stop a generation job at this spend. Leave empty for no cap.").default(null),
+        autoGenerate: z.boolean().describe("Not used yet. Generation always starts from “Generate Docs”, after showing an estimate.").default(false),
+        maxCostUsd: z.number().nonnegative().nullable().describe("Total spend on generated docs. Generation stops before the next document would go over it. Leave empty for no cap.").default(null),
       })
       .default({}),
     commitKnowledge: z.boolean().describe("Whether the OKF bundle is meant to be committed.").default(true),
@@ -121,6 +141,12 @@ export const StatusSchema = z.object({
     reviewed: z.number().int().nonnegative(),
     drafts: z.number().int().nonnegative(),
     stale: z.number().int().nonnegative(),
+  }),
+  llm: z.object({
+    mode: z.enum(LLM_MODES),
+    model: z.string().nullable(),
+    ready: z.boolean().describe("The server can generate docs itself right now."),
+    problem: z.string().nullable().describe("Why not, in words a person can act on."),
   }),
   cost: z.object({
     calls: z.number().int().nonnegative(),
@@ -359,3 +385,54 @@ export const CostSummarySchema = z.object({
   recent: z.array(CostCallSchema),
 });
 export type CostSummary = z.infer<typeof CostSummarySchema>;
+
+// ---------------------------------------------------------------------------
+// Server-side doc generation
+// ---------------------------------------------------------------------------
+
+export const GenerationScopeSchema = z.object({
+  kind: z.enum(["file", "module", "both"]).default("both"),
+  under: z.string().optional().describe("Only targets at or below this repo-relative folder."),
+  includeStale: z.boolean().default(true).describe("Also redo reviewed docs whose code changed since."),
+  limit: z.number().int().min(1).max(2000).optional().describe("At most this many targets, most important first."),
+});
+export type GenerationScope = z.infer<typeof GenerationScopeSchema>;
+
+export const EstimateSchema = z.object({
+  mode: z.enum(LLM_MODES),
+  model: z.string().nullable(),
+  targets: z.array(z.object({
+    target: z.string(), kind: z.enum(DOC_KINDS), reason: z.enum(["none", "stale", "draft-outdated"]),
+    inputTokens: z.number().int(), outputTokens: z.number().int().describe("Assumed, before any reasoning the model adds."),
+  })),
+  totals: z.object({
+    targets: z.number().int(), inputTokens: z.number().int(), outputTokens: z.number().int(),
+    costUsd: z.object({ low: z.number(), high: z.number() }).nullable().describe("null when the model has no price."),
+  }),
+  tokensAreEstimates: z.literal(true),
+  budget: z.object({ capUsd: z.number().nullable(), spentUsd: z.number(), remainingUsd: z.number().nullable() }),
+  warnings: z.array(z.string()),
+  canStart: z.boolean(),
+  blocked: z.string().nullable().describe("Why generation cannot start."),
+});
+export type Estimate = z.infer<typeof EstimateSchema>;
+
+export const GENERATION_OUTCOMES = ["drafted", "error", "refused", "truncated", "skipped"] as const;
+export const GenerationStateSchema = z.object({
+  state: z.enum(["idle", "running", "cancelling", "done", "stopped", "failed"]),
+  jobId: z.string().nullable(),
+  startedAt: z.string().nullable(),
+  finishedAt: z.string().nullable(),
+  model: z.string().nullable(),
+  total: z.number().int(), done: z.number().int(), drafted: z.number().int(), failed: z.number().int(),
+  current: z.string().nullable(),
+  spendUsd: z.number().describe("Known cost of this job."),
+  tokensIn: z.number().int(), tokensOut: z.number().int(),
+  stopReason: z.enum(["budget", "cancelled", "auth", "errors", "provider"]).nullable(),
+  message: z.string().nullable(),
+  results: z.array(z.object({
+    target: z.string(), kind: z.enum(DOC_KINDS), outcome: z.enum(GENERATION_OUTCOMES),
+    message: z.string().nullable(), costUsd: z.number().nullable(), tokensIn: z.number().int().nullable(), tokensOut: z.number().int().nullable(),
+  })).describe("The most recent results, newest last."),
+});
+export type GenerationState = z.infer<typeof GenerationStateSchema>;

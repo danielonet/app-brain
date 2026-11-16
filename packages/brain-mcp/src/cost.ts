@@ -17,6 +17,25 @@ function effectiveCost(r: LlmCallRow, pricing: BrainConfig["pricing"]): { usd: n
   return { usd: null, source: null };
 }
 
+export interface Usage {
+  inputTokens: number | null;
+  outputTokens: number | null;
+  cachedTokens?: number | null;
+}
+
+/**
+ * Dollars for one call, or null when it cannot be known (no price for the model, or a token count is missing).
+ * `inputTokens` is everything the model read; the cached part is charged at the cached rate when one is set.
+ * (Cache writes cost more than plain input; nothing here writes a cache, so they are not modelled.)
+ */
+export function callCost(pricing: BrainConfig["pricing"], model: string, u: Usage): number | null {
+  const price: Price | undefined = pricing[model];
+  if (!price || u.inputTokens === null || u.outputTokens === null) return null;
+  const cached = Math.min(u.cachedTokens ?? 0, u.inputTokens);
+  const plain = u.inputTokens - cached;
+  return round((plain * price.inputPerMtok + cached * (price.cachedPerMtok ?? price.inputPerMtok) + u.outputTokens * price.outputPerMtok) / 1e6);
+}
+
 const dayOf = (ts: string) => ts.slice(0, 10);
 const moduleOf = (r: LlmCallRow) => (r.kind === "module" ? r.target : path.posix.dirname(r.target));
 const round = (n: number) => Math.round(n * 1e6) / 1e6; // keeps float noise out of the report

@@ -395,6 +395,15 @@ export class BrainStore {
     return rows.filter((r) => r.path.startsWith(dir + "/"));
   }
 
+  /** Signatures and doc comments, for building a prompt. */
+  symbolDetails(filePath: string, limit: number): { qualified_name: string; kind: string; signature: string; docstring: string | null; exported: number }[] {
+    return this.all(
+      `SELECT s.qualified_name, s.kind, s.signature, s.docstring, s.exported FROM symbol s JOIN file f ON f.id = s.file_id
+       WHERE f.path = ? ORDER BY s.start_line LIMIT ?`,
+      filePath, limit,
+    );
+  }
+
   symbolsInFile(filePath: string, limit: number): { qualified_name: string; kind: string; exported: number }[] {
     return this.all(
       `SELECT s.qualified_name, s.kind, s.exported FROM symbol s JOIN file f ON f.id = s.file_id
@@ -409,7 +418,7 @@ export class BrainStore {
     target: string; kind: string; provider: string | null; model: string; mode: string;
     inputTokens: number | null; outputTokens: number | null; cachedTokens?: number | null;
     tokensSource: "provider-reported" | "agent-reported" | "estimated";
-    costUsd: number | null; costSource: "price-table" | null; outcome: string;
+    costUsd: number | null; costSource: string | null; outcome: string;
   }) {
     this.run(
       `INSERT INTO llm_call (ts, target, kind, provider, model, mode, input_tokens, output_tokens, cached_tokens, tokens_source, cost_usd, cost_source, outcome)

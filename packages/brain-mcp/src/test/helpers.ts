@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { CreateMessageRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { AdminTools, ENV_ADMIN_TOKEN, Resources } from "@app-brain/brain-protocol";
 
 export const TOKEN = "t";
@@ -40,11 +41,18 @@ export function fixture(extra: Record<string, string> = {}): string {
   return dir;
 }
 
-export async function connect(workspace: string, opts: { clientName?: string; admin?: boolean } = {}): Promise<Client> {
-  const env: Record<string, string> = { ...(process.env as Record<string, string>) };
+export type SamplingHandler = (params: any) => Promise<{ model: string; role: "assistant"; content: { type: "text"; text: string }; stopReason?: string; _meta?: Record<string, unknown> }>;
+
+export async function connect(
+  workspace: string,
+  opts: { clientName?: string; admin?: boolean; env?: Record<string, string>; sampling?: SamplingHandler } = {},
+): Promise<Client> {
+  const env: Record<string, string> = { ...(process.env as Record<string, string>), ...(opts.env ?? {}) };
   if (opts.admin) env[ENV_ADMIN_TOKEN] = TOKEN;
   else delete env[ENV_ADMIN_TOKEN];
-  const client = new Client({ name: opts.clientName ?? "claude-code", version: "1" });
+  for (const k of Object.keys(env)) if (k.startsWith("BRAIN_LLM_") && !(opts.env && k in opts.env)) delete env[k]; // tests opt in to an LLM
+  const client = new Client({ name: opts.clientName ?? "claude-code", version: "1" }, opts.sampling ? { capabilities: { sampling: {} } } : undefined);
+  if (opts.sampling) client.setRequestHandler(CreateMessageRequestSchema, async (req) => (await opts.sampling!(req.params)) as never);
   await client.connect(new StdioClientTransport({ command: process.execPath, args: [CLI, "--workspace", workspace, "--no-watch"], env, stderr: "ignore" }));
   if (opts.admin) await client.callTool({ name: AdminTools.hello, arguments: { adminToken: TOKEN } });
   return client;

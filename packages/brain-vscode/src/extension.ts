@@ -2,12 +2,14 @@ import { execFile } from "node:child_process";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as vscode from "vscode";
-import type { BrainStatus, PendingItem, UsageSummary } from "@app-brain/brain-protocol";
+import type { BrainStatus, GenerationScope, GenerationState, PendingItem, UsageSummary } from "@app-brain/brain-protocol";
 import { BrainClient } from "./client";
 import { CostPanel } from "./costPanel";
 import { GraphPanel } from "./graphPanel";
 import { SettingsPanel } from "./settingsPanel";
-import { ActivityItem, ConnState, ReviewRow, activityItems, flashText, mcpConfigSnippet, reviewRows, statusBarText, validationReport, validationSummary } from "./format";
+import { ActivityItem, ConnState, ReviewRow, activityItems, estimateDetail, estimateTitle, flashText, generationBarText, generationProblems, generationProgress, generationSummary, mcpConfigSnippet, reviewRows, statusBarText, validationReport, validationSummary } from "./format";
+import { llmEnv, validateApiKey } from "./llmEnv";
+import { sampleWithEditorModel } from "./lmBridge";
 
 let client: BrainClient | undefined;
 
@@ -104,8 +106,35 @@ export async function activate(context: vscode.ExtensionContext) {
     }
   };
 
-  const make = () =>
-    new BrainClient({
+  const API_KEY = "brain.llm.apiKey";
+  const llmSettings = () => ({
+    mode: cfg().get<string>("llm.mode", "agent"),
+    model: cfg().get<string>("llm.model", ""),
+    baseUrl: cfg().get<string>("llm.baseUrl", ""),
+    effort: cfg().get<string>("llm.effort", ""),
+  });
+
+  // Generation progress: the status bar shows it, and a running "Generate Docs" command waits on it.
+  let generation: GenerationState | null = null;
+  const generationWaiters = new Set<(g: GenerationState) => void>();
+  const onGeneration = (g: GenerationState) => {
+    generation = g;
+    const text = generationBarText(g);
+    if (text) bar.text = text;
+    else onState(lastConn, client?.current ?? null);
+    if (g.state !== "running" && g.state !== "cancelling") for (const w of generationWaiters) w(g);
+    for (const w of progressWatchers) w(g);
+  };
+  const progressWatchers = new Set<(g: GenerationState) => void>();
+
+  const make = async () => {
+    const settings = llmSettings();
+    // The key lives in VS Code's secret storage. An ANTHROPIC_API_KEY in the environment is a fallback for api-key mode only.
+    const key = (await context.secrets.get(API_KEY)) ?? (settings.mode === "api-key" ? process.env.ANTHROPIC_API_KEY : undefined);
+    return new BrainClient({
+      env: llmEnv(settings, key),
+      sample: settings.mode === "vscode-lm" ? (params, signal) => sampleWithEditorModel(params, signal) : undefined,
+      onGeneration,
       nodePath: cfg().get<string>("server.nodePath", "node"),
       serverPath: resolveServerPath(),
       workspace: folder.uri.fsPath,
@@ -116,6 +145,77 @@ export async function activate(context: vscode.ExtensionContext) {
       onPending,
       onCost: () => CostPanel.refreshIfOpen(),
     });
+  };
+
+  /** Choose a scope, show the estimate, ask, then run the job with a progress notification the person can cancel. */
+  const generateDocs = async () => {
+    const c = client;
+    if (!c?.current) throw new Error("The brain server is not running.");
+    if (!c.current.initialised) {
+      const pick = await vscode.window.showInformationMessage("Initialise the .brain folder first.", "Initialise");
+      if (pick === "Initialise") await vscode.commands.executeCommand("brain.initialise");
+      return;
+    }
+    if (!c.current.llm.ready) {
+      const pick = await vscode.window.showWarningMessage(c.current.llm.problem ?? "The server cannot generate docs yet.", "Open settings", ...(c.current.llm.mode === "api-key" ? ["Set API key"] : []));
+      if (pick === "Open settings") await vscode.commands.executeCommand("workbench.action.openSettings", "brain.llm");
+      if (pick === "Set API key") await vscode.commands.executeCommand("brain.setApiKey");
+      return;
+    }
+    const choice = await vscode.window.showQuickPick(
+      [
+        { label: "Everything without a current doc", description: "files and modules", scope: {} as Partial<GenerationScope> },
+        { label: "Files only", scope: { kind: "file" } as Partial<GenerationScope> },
+        { label: "Modules only", description: "needs file docs first for the best result", scope: { kind: "module" } as Partial<GenerationScope> },
+        { label: "One folder…", scope: null },
+      ],
+      { title: "Generate docs", placeHolder: "What should the server write docs for?" },
+    );
+    if (!choice) return;
+    let scope: Partial<GenerationScope>;
+    if (choice.scope === null) {
+      const rel = vscode.window.activeTextEditor ? path.posix.dirname(vscode.workspace.asRelativePath(vscode.window.activeTextEditor.document.uri, false).replace(/\\/g, "/")) : "";
+      const under = await vscode.window.showInputBox({ prompt: "Folder, relative to the workspace root", value: rel === "." ? "" : rel });
+      if (under === undefined) return;
+      scope = { under: under.trim() || "." };
+    } else scope = choice.scope;
+
+    const estimate = await c.estimateGeneration(scope);
+    if (!estimate.canStart) {
+      const pick = await vscode.window.showWarningMessage(estimate.blocked ?? "Generation cannot start.", ...(/price|cap|budget/i.test(estimate.blocked ?? "") ? ["Model prices and budget…"] : []));
+      if (pick) await vscode.commands.executeCommand("brain.openSettings");
+      return;
+    }
+    const go = await vscode.window.showInformationMessage(estimateTitle(estimate), { modal: true, detail: estimateDetail(estimate) }, "Generate");
+    if (go !== "Generate") return;
+
+    await c.generateDocs(scope);
+    const finished = await vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: "Brain: writing docs", cancellable: true },
+      (progress, token) =>
+        new Promise<GenerationState>((resolve) => {
+          let last = 0;
+          const watcher = (g: GenerationState) => {
+            progress.report({ message: generationProgress(g), increment: g.total ? ((g.done - last) / g.total) * 100 : 0 });
+            last = g.done;
+          };
+          progressWatchers.add(watcher);
+          const waiter = (g: GenerationState) => {
+            progressWatchers.delete(watcher);
+            generationWaiters.delete(waiter);
+            resolve(g);
+          };
+          generationWaiters.add(waiter);
+          token.onCancellationRequested(() => void c.cancelGeneration());
+          if (generation && generation.state !== "running" && generation.state !== "cancelling") waiter(generation);
+        }),
+    );
+    for (const line of generationProblems(finished)) out.appendLine(line);
+    const summary = generationSummary(finished);
+    const show = summary.level === "error" ? vscode.window.showErrorMessage : summary.level === "warning" ? vscode.window.showWarningMessage : vscode.window.showInformationMessage;
+    const pick = await show(summary.text, "Review drafts");
+    if (pick === "Review drafts") await vscode.commands.executeCommand("brain.review.focus");
+  };
 
   const run = async (label: string, fn: () => Promise<unknown>) => {
     try {
@@ -126,14 +226,24 @@ export async function activate(context: vscode.ExtensionContext) {
     }
   };
 
-  client = make();
+  client = await make();
+
+  /** Starts a fresh server, e.g. after the LLM settings or the key changed. */
+  const restart = async () => {
+    await client?.stop();
+    client = await make();
+    await client.start();
+  };
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration("brain.llm")) void restart().catch((err) => out.appendLine(`restart failed: ${(err as Error).message}`));
+    }),
+  );
 
   context.subscriptions.push(
     vscode.commands.registerCommand("brain.start", () =>
       run("start", async () => {
-        await client?.stop();
-        client = make();
-        await client.start();
+        await restart();
       }),
     ),
     vscode.commands.registerCommand("brain.stop", () => client?.stop()),
@@ -192,6 +302,26 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand("brain.openSettings", () =>
       SettingsPanel.show(context.extensionUri, () => client, path.posix.join(cfg().get<string>("outputDir", ".brain"), "config.json")),
     ),
+    vscode.commands.registerCommand("brain.setApiKey", async () => {
+      const key = await vscode.window.showInputBox({
+        title: "LLM API key",
+        prompt: "Paste your API key. It is stored in VS Code's secret storage and given only to the local brain server.",
+        password: true,
+        ignoreFocusOut: true,
+        validateInput: validateApiKey,
+      });
+      if (key === undefined) return;
+      await context.secrets.store(API_KEY, key.trim());
+      void vscode.window.showInformationMessage("API key saved. Set “brain.llm.mode” to “api-key” to use it.");
+      await restart();
+    }),
+    vscode.commands.registerCommand("brain.clearApiKey", async () => {
+      await context.secrets.delete(API_KEY);
+      void vscode.window.showInformationMessage("API key removed.");
+      await restart();
+    }),
+    vscode.commands.registerCommand("brain.generateDocs", () => run("generate docs", () => generateDocs())),
+    vscode.commands.registerCommand("brain.cancelGeneration", () => run("cancel", async () => void (await client?.cancelGeneration()))),
     vscode.commands.registerCommand("brain.showCost", () => CostPanel.show(context.extensionUri, () => client, folder.uri.fsPath)),
     vscode.commands.registerCommand("brain.exportCostReport", () =>
       run("export cost report", async () => {

@@ -37,6 +37,10 @@
       { "command": "brain.stop", "title": "Brain: Stop Server" },
       { "command": "brain.reindex", "title": "Brain: Reindex Workspace" },
       { "command": "brain.openSettings", "title": "Brain: Open Settings", "icon": "$(gear)" },
+      { "command": "brain.generateDocs", "title": "Brain: Generate Docs…", "icon": "$(sparkle)" },
+      { "command": "brain.cancelGeneration", "title": "Brain: Cancel Doc Generation" },
+      { "command": "brain.setApiKey", "title": "Brain: Set LLM API Key" },
+      { "command": "brain.clearApiKey", "title": "Brain: Clear LLM API Key" },
       { "command": "brain.showCost", "title": "Brain: Show Cost & Models", "icon": "$(graph)" },
       { "command": "brain.exportCostReport", "title": "Brain: Export Cost Report" },
       { "command": "brain.showGraph", "title": "Brain: Show Dependency Graph", "icon": "$(type-hierarchy)" },
@@ -52,6 +56,7 @@
     ],
     "menus": {
       "view/title": [
+        { "command": "brain.generateDocs", "when": "view == brain.review", "group": "navigation@0" },
         { "command": "brain.showGraph", "when": "view == brain.review", "group": "navigation@1" },
         { "command": "brain.showCost", "when": "view == brain.review", "group": "navigation@2" },
         { "command": "brain.openSettings", "when": "view == brain.review", "group": "navigation@3" }
@@ -84,6 +89,34 @@
           "type": "string",
           "default": ".brain",
           "markdownDescription": "Output folder relative to the workspace root. Changing it needs a server restart and moving the existing folder."
+        },
+        "brain.llm.mode": {
+          "type": "string",
+          "enum": ["agent", "vscode-lm", "api-key", "local"],
+          "default": "agent",
+          "enumDescriptions": [
+            "The server writes nothing. Agents (Claude Code, Copilot, Cursor) write docs through save_summary. No key and no cost here.",
+            "The server asks this editor's language model (for example GitHub Copilot) to write docs. VS Code asks for your consent. Token counts are estimates.",
+            "The server calls the Claude API with your key. Exact token counts and costs. Your source code is sent to Anthropic.",
+            "The server calls a model running on your machine (Ollama, llama.cpp, LM Studio). Nothing leaves your computer."
+          ],
+          "markdownDescription": "Who writes documentation when you run **Brain: Generate Docs**. Every result is a draft that you review."
+        },
+        "brain.llm.model": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Model id. **api-key**: defaults to `claude-opus-5-5`; a smaller model costs much less per doc. **local**: required, for example `llama3.1`. **vscode-lm**: optional model family to prefer. Set its price under *Model prices and budget* to see dollars."
+        },
+        "brain.llm.baseUrl": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "**local**: your server's OpenAI-compatible URL; defaults to `http://localhost:11434/v1` (Ollama). **api-key**: leave empty unless you use an API gateway."
+        },
+        "brain.llm.effort": {
+          "type": "string",
+          "enum": ["", "low", "medium", "high", "xhigh", "max"],
+          "default": "",
+          "markdownDescription": "**api-key** only: how hard Claude thinks per doc. `low` is cheapest and is usually enough for documentation. Empty uses the model's default. Models that do not support it reject it, so leave it empty if a run fails with a 400."
         },
         "brain.registerWithCopilot": {
           "type": "boolean",

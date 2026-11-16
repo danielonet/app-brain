@@ -1,4 +1,4 @@
-import type { BrainStatus, PendingItem, UsageEntry, UsageSummary, ValidationResult } from "@app-brain/brain-protocol";
+import type { BrainStatus, Estimate, GenerationState, PendingItem, UsageEntry, UsageSummary, ValidationResult } from "@app-brain/brain-protocol";
 
 /** Pure formatting, kept free of the `vscode` module so it can be unit-tested. */
 export type ConnState = "disconnected" | "connecting" | "connected" | "failed";
@@ -35,6 +35,7 @@ export function statusBarText(conn: ConnState, status: BrainStatus | null): { te
     tooltip:
       `Brain ${status.serverVersion}\n${sym} symbols, ${status.index.edges} import links\n` +
       `Docs: ${k.reviewed} reviewed, ${k.drafts} awaiting review, ${k.stale} stale\n` +
+      (status.llm.mode === "agent" ? "" : `Doc generation: ${status.llm.ready ? `ready (${status.llm.mode}, ${status.llm.model ?? "default model"})` : `not ready. ${status.llm.problem ?? ""}`}\n`) +
       (status.cost.calls > 0 ? `LLM spend: ${spend(status.cost.spendUsd)}${status.cost.complete ? "" : " or more (some calls could not be priced)"} over ${status.cost.calls} call${status.cost.calls === 1 ? "" : "s"}\n` : "") +
       `Output: ${status.outputDir}${langs ? `\n${langs}` : ""}`,
     error: false,
@@ -141,4 +142,59 @@ export function validationReport(r: ValidationResult): string[] {
 export function validationSummary(r: ValidationResult): string {
   const n = (s: string) => r.issues.filter((i) => i.severity === s).length;
   return `${r.conformant ? "Conformant" : "Not conformant"}: ${n("error")} errors, ${n("warning")} warnings, ${n("info")} notes`;
+}
+
+// ---------------------------------------------------------------------------
+// Server-side doc generation: what the person sees before, during and after
+// ---------------------------------------------------------------------------
+
+const dollars = (n: number) => (n === 0 ? "$0.00" : n < 0.01 ? "<$0.01" : n < 100 ? `$${n.toFixed(2)}` : `$${Math.round(n)}`);
+const tokens = (n: number) => (n >= 1e6 ? `${(n / 1e6).toFixed(1).replace(/\.0$/, "")}M` : n >= 1e3 ? `${(n / 1e3).toFixed(n >= 1e5 ? 0 : 1).replace(/\.0$/, "")}K` : String(n));
+
+/** The text of the confirmation dialog: every number labelled an estimate, and what happens to the result. */
+export function estimateDetail(e: Estimate): string {
+  const t = e.totals;
+  const lines = [
+    `${t.targets} file${t.targets === 1 ? "" : "s"} and module${t.targets === 1 ? "" : "s"}, about ${tokens(t.inputTokens)} tokens in and ${tokens(t.outputTokens)}+ out (estimates).`,
+    t.costUsd === null
+      ? `Cost: unknown. ${e.model ?? "This model"} has no price set.`
+      : t.costUsd.high === 0
+        ? "Cost: nothing (a local model)."
+        : `Cost: about ${dollars(t.costUsd.low)} to ${dollars(t.costUsd.high)} with ${e.model} (an estimate; reasoning models can use more).`,
+  ];
+  if (e.budget.capUsd !== null) lines.push(`Budget: ${dollars(e.budget.spentUsd)} spent of ${dollars(e.budget.capUsd)}. It stops before a document could go over.`);
+  for (const w of e.warnings) lines.push(w);
+  lines.push("Every result is a draft that you review before it is kept.");
+  return lines.join("\n\n");
+}
+
+export const estimateTitle = (e: Estimate) =>
+  `Write ${e.totals.targets} doc${e.totals.targets === 1 ? "" : "s"} with ${e.model ?? e.mode}${e.totals.costUsd && e.totals.costUsd.high > 0 ? ` (about ${dollars(e.totals.costUsd.low)} to ${dollars(e.totals.costUsd.high)})` : ""}?`;
+
+export function generationBarText(g: GenerationState): string | null {
+  if (g.state !== "running" && g.state !== "cancelling") return null;
+  return g.state === "cancelling" ? "$(sync~spin) Brain: cancelling" : `$(sync~spin) Brain: generating ${g.done}/${g.total}`;
+}
+
+export function generationProgress(g: GenerationState): string {
+  const cost = g.spendUsd > 0 ? ` · ${dollars(g.spendUsd)}` : "";
+  return `${g.done}/${g.total}${g.current ? ` · ${g.current}` : ""}${cost}`;
+}
+
+/** The message shown when a job ends, and how loudly to say it. */
+export function generationSummary(g: GenerationState): { text: string; level: "info" | "warning" | "error" } {
+  const money = g.spendUsd > 0 ? ` for ${dollars(g.spendUsd)}` : "";
+  const wrote = `Wrote ${g.drafted} draft${g.drafted === 1 ? "" : "s"}${money}.`;
+  if (g.state === "done") {
+    return g.failed ? { text: `${wrote} ${g.failed} had problems: see the App Brain output.`, level: "warning" } : { text: `${wrote} Review them in the Review Queue.`, level: "info" };
+  }
+  if (g.stopReason === "cancelled") return { text: `Cancelled. ${wrote}`, level: "info" };
+  if (g.stopReason === "budget") return { text: `${g.message ?? "Stopped at the budget."} ${wrote}`, level: "warning" };
+  if (g.stopReason === "auth") return { text: g.message ?? "The API key was rejected.", level: "error" };
+  return { text: `${g.message ?? "Stopped."} ${wrote}`, level: "error" };
+}
+
+/** One line per problem, for the output channel. */
+export function generationProblems(g: GenerationState): string[] {
+  return g.results.filter((r) => r.outcome !== "drafted").map((r) => `${r.outcome.toUpperCase().padEnd(9)} ${r.target}: ${r.message ?? ""}`);
 }

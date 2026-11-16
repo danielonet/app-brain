@@ -169,7 +169,7 @@
       const text = { ok: ["✓", "Within budget"], near: ["⚠", "Near the budget"], exceeded: ["✕", "Over budget"] }[b.state];
       root.append(h("section", { class: "card", id: "budget" }, h("h2", { text: "Budget" }),
         h("div", { class: "meter " + b.state, role: "meter", "aria-valuemin": "0", "aria-valuemax": String(b.capUsd), "aria-valuenow": String(b.spentUsd), "aria-label": "Spend against the budget cap" }, h("i", { style: { width: (ratio * 100).toFixed(1) + "%" } })),
-        h("div", { class: "meter-label" }, h("span", { "aria-hidden": "true", text: text[0] }), h("strong", { text: text[1] }), h("span", { class: "muted", text: `${usd(b.spentUsd)} of ${usd(b.capUsd)}; ${usd(b.remainingUsd)} left. The cap is a warning for now: nothing stops an agent that keeps going.` }))));
+        h("div", { class: "meter-label" }, h("span", { "aria-hidden": "true", text: text[0] }), h("strong", { text: text[1] }), h("span", { class: "muted", text: `${usd(b.spentUsd)} of ${usd(b.capUsd)}; ${usd(b.remainingUsd)} left. The cap stops the server's own generation before it goes over; it cannot stop an agent that writes docs by itself.` }))));
     }
 
     // the metric filter scopes every chart below it

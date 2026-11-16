@@ -11,6 +11,7 @@ import {
   BrainStatus,
   DOC_KINDS,
   GRAPH_LEVELS,
+  GenerationScopeSchema,
   ConfigSchema,
   HelloResult,
   PROTOCOL_VERSION,
@@ -20,6 +21,8 @@ import {
 } from "@app-brain/brain-protocol";
 import { Indexer } from "./indexer";
 import { summarize, toCsv, toMarkdown } from "./cost";
+import { Generator } from "./generate/generator";
+import { llmFromEnv } from "./llm/factory";
 import { buildGraph, toJsonLd } from "./okf/graph";
 import { Knowledge } from "./okf/knowledge";
 import { BrainStore, type SymbolHit } from "./store";
@@ -38,6 +41,8 @@ export interface BrainServerOptions {
   adminToken?: string;
   /** Watch the workspace and re-index on change. Default true. */
   watch?: boolean;
+  /** Where the LLM settings come from. Defaults to the process environment. */
+  env?: NodeJS.ProcessEnv;
   log?: (line: string) => void;
 }
 
@@ -99,6 +104,20 @@ export function createBrainServer(opts: BrainServerOptions) {
     () => state.state === "idle",
   );
 
+  const env = opts.env ?? process.env;
+  const llm = () => llmFromEnv(env, server.server);
+  const generator = new Generator({
+    ws,
+    store: () => store,
+    knowledge,
+    llm,
+    log,
+    onChange: () => {
+      notify(Resources.generation);
+      notify(Resources.status);
+    },
+  });
+
   const state = { state: "starting" as BrainStatus["state"], message: null as string | null };
   let lastNotify = 0;
 
@@ -122,6 +141,7 @@ export function createBrainServer(opts: BrainServerOptions) {
       startedAt,
       index: { files: c.files, symbols: c.symbols, edges: c.edges, byLanguage: c.byLanguage, lastIndexedAt: c.lastIndexedAt },
       knowledge: await knowledge.counts(),
+      llm: (({ mode, model, provider, problem }) => ({ mode, model, ready: provider !== null, problem }))(llm()),
       cost: await costTotals(),
       message: state.message,
     };
@@ -159,6 +179,7 @@ export function createBrainServer(opts: BrainServerOptions) {
   resource("config", Resources.config, "Brain config", "Team config (.brain/config.json), or defaults when not initialised.", () => ws.readConfig());
   resource("pending-review", Resources.pendingReview, "Pending review", "Generated docs in drafts/ waiting for a human to approve or reject them.", () => knowledge.pending());
   resource("coverage", Resources.coverage, "Documentation coverage", "How many files and modules have reviewed, draft or stale docs.", () => knowledge.coverage());
+  resource("generation", Resources.generation, "Doc generation", "Progress and results of the server's doc generation job.", () => generator.state);
   resource("cost-summary", Resources.costSummary, "LLM cost", "Spend, tokens and models behind generated docs, with how much of it is exact versus estimated.", costSummary);
   resource("usage", Resources.usage, "Agent usage", "Recent calls agents made to the brain tools, with totals by client and tool.", () => store.usageSummary());
 
@@ -498,6 +519,46 @@ export function createBrainServer(opts: BrainServerOptions) {
     }),
   );
 
+  const scopeShape = {
+    kind: GenerationScopeSchema.shape.kind,
+    under: GenerationScopeSchema.shape.under,
+    includeStale: GenerationScopeSchema.shape.includeStale,
+    limit: GenerationScopeSchema.shape.limit,
+  };
+
+  server.registerTool(
+    AdminTools.estimateGeneration,
+    { description: "What generating docs would read and cost, before spending anything. Calls no model. Every number is an estimate.", inputSchema: scopeShape },
+    guarded(async (scope: Record<string, unknown>) => {
+      try {
+        return json(await generator.estimate(scope));
+      } catch (e) {
+        return fail((e as Error).message);
+      }
+    }),
+  );
+
+  server.registerTool(
+    AdminTools.generateDocs,
+    {
+      description: "Start writing doc drafts with the configured LLM. Returns at once; progress is at brain://generation. Needs confirm: true, which a client sets only after showing the person the estimate.",
+      inputSchema: { ...scopeShape, confirm: z.literal(true) },
+    },
+    guarded(async ({ confirm: _confirm, ...scope }: Record<string, unknown>) => {
+      try {
+        return json(await generator.start(scope));
+      } catch (e) {
+        return fail((e as Error).message);
+      }
+    }),
+  );
+
+  server.registerTool(
+    AdminTools.cancelGeneration,
+    { description: "Stop the running generation job. The document in progress is abandoned; drafts already written are kept." },
+    guarded(async () => json(generator.cancel())),
+  );
+
   let watcher: { close(): void } | null = null;
   return {
     server,
@@ -523,6 +584,7 @@ export function createBrainServer(opts: BrainServerOptions) {
       }
     },
     close() {
+      generator.cancel();
       watcher?.close();
       store.close();
     },

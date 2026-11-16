@@ -5,7 +5,7 @@ import { activityItems, describeArgs, flashText, mcpConfigSnippet, reviewRows, s
 
 const base: BrainStatus = {
   state: "idle", initialised: true, workspace: "/w", outputDir: "/w/.brain", serverVersion: "0.0.0",
-  protocolVersion: "0.2", startedAt: "", knowledge: { reviewed: 2, drafts: 0, stale: 1 }, cost: { calls: 0, spendUsd: 0, complete: true }, index: { files: 3, symbols: 12, edges: 4, byLanguage: { typescript: 2, python: 1 }, lastIndexedAt: null }, message: null,
+  protocolVersion: "0.2", startedAt: "", knowledge: { reviewed: 2, drafts: 0, stale: 1 }, cost: { calls: 0, spendUsd: 0, complete: true }, llm: { mode: "agent", model: null, ready: false, problem: null }, index: { files: 3, symbols: 12, edges: 4, byLanguage: { typescript: 2, python: 1 }, lastIndexedAt: null }, message: null,
 };
 
 describe("statusBarText", () => {

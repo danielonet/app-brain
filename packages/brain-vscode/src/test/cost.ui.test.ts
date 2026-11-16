@@ -164,7 +164,7 @@ describe("cost view, in a real browser", { skip: !chromium && "playwright is not
     await open(real);
     assert.match(await text("#budget .meter-label"), /\$1\.06 of \$1\.00/, "the real run overspent its $1 cap");
     assert.match(await text("#budget .meter-label"), /Over budget/);
-    assert.match(await text("#budget .meter-label"), /nothing stops an agent/, "does not pretend the cap is enforced");
+    assert.match(await text("#budget .meter-label"), /cannot stop an agent that writes docs by itself/, "does not claim to control agents it does not control");
     await open(summary({ totals: { ...summary().totals, calls: 1 } }));
     assert.equal(await page.locator("#budget").count(), 0, "no cap, no meter");
   });

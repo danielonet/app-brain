@@ -25,9 +25,19 @@ Generate application context out of a code base: a knowledge base an AI agent ca
 
 **Admin tools (token-gated, extension only).** `hello`, `init`, `get_config`, `get_config_schema`, `set_config`, `reindex`, `review_summary`, `validate`, `export_graph` (writes `.brain/graph/graph.jsonld`), `export_cost_report`. Agents started without `BRAIN_ADMIN_TOKEN` cannot call them, so an agent cannot approve its own docs.
 
-**Cost.** Every `save_summary` is recorded with the model, token counts and where they came from (reported by the agent, or estimated). A call made before its model had a price is priced from today's table, but only when both token counts are known; otherwise the report says the total is a lower bound and why. The budget cap is a warning for now: nothing stops an agent that keeps going.
+**Cost.** Every `save_summary` is recorded with the model, token counts and where they came from (reported by the agent, or estimated). A call made before its model had a price is priced from today's table, but only when both token counts are known; otherwise the report says the total is a lower bound and why. The budget cap stops the server's own generation before it would go over; it cannot stop an agent that calls `save_summary` on its own.
 
-Not built yet: doc generation by the server itself (`vscode.lm`, API key), notes (`add_note`), symbol-level call edges (LSP/SCIP), the HTTP daemon. See the plans.
+**Server-side generation.** **Brain: Generate Docs** lets the server write the drafts itself instead of waiting for an agent. Choose who writes them in the `brain.llm.*` settings (the default, `agent`, does nothing):
+
+| Mode | Who writes | Tokens and cost | Leaves your machine |
+|---|---|---|---|
+| `api-key` | Claude, through the official SDK, with a key kept in VS Code's secret storage (**Brain: Set LLM API Key**) | Exact, from the API's usage | Yes: source code goes to Anthropic. Anything that looks like a credential is removed first |
+| `vscode-lm` | The editor's own model (for example Copilot), asked over MCP sampling. VS Code asks for consent | Measured by the editor's tokenizer, or estimated | Whatever that model's provider does |
+| `local` | A model on your machine through an OpenAI-compatible server (Ollama, llama.cpp, LM Studio) | Free | No |
+
+Before anything is spent you see an estimate (every number labelled as one) and confirm. The job is bottom-up (files by how many others import them, then modules from the deepest up, so a module reads the summaries of what it contains), runs one document at a time, shows progress, and can be cancelled mid-call. The budget cap is enforced here: before each call the server prices its worst case and stops rather than risk going over, and it refuses to start with a cap if the model has no price. A refusal, a truncated answer or an unusable one is recorded as a problem, still counted in the cost report, and never kept. Three failures in a row stop the job; a rejected key stops it at once. Reviewer notes from earlier rejections are given to the model on the next attempt. Everything written is still an unreviewed draft: nothing reaches the knowledge base without a person approving it. The code is treated as data: all repository text sits inside a fence with a random id that the code cannot close, and the model's output cannot forge a review or the managed dependency block.
+
+Not built yet: notes (`add_note`), symbol-level call edges (LSP/SCIP), the HTTP daemon, automatic generation after indexing (`docs.autoGenerate` is reserved and does nothing). See the plans.
 
 ## Develop
 

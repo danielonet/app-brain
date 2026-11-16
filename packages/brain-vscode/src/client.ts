@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport, getDefaultEnvironment } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { ResourceUpdatedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
+import { CreateMessageRequestSchema, ResourceUpdatedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
 import {
   AdminTools,
   BrainStatus,
@@ -15,6 +15,9 @@ import {
   ReviewResult,
   ValidationResult,
   CostSummary,
+  Estimate,
+  GenerationScope,
+  GenerationState,
   ReindexResult,
   Resources,
   UsageSummary,
@@ -32,6 +35,12 @@ export interface BrainClientOptions {
   onPending?: (items: PendingItem[]) => void;
   /** The server says cost data changed (a doc was written, reviewed, or prices were edited). */
   onCost?: () => void;
+  /** Progress of the server's doc generation job. */
+  onGeneration?: (state: GenerationState) => void;
+  /** Extra environment for the server process: LLM settings and the API key. Never put on the command line. */
+  env?: Record<string, string>;
+  /** Answers the server's requests to run a prompt (MCP sampling). Declares the capability only when given. */
+  sample?: (params: any, signal: AbortSignal) => Promise<unknown>;
 }
 
 /** A tool call the server answered with an error. `details` carries field errors for set_config. */
@@ -74,10 +83,14 @@ export class BrainClient {
       const transport = new StdioClientTransport({
         command: this.opts.nodePath,
         args: [this.opts.serverPath, "--workspace", this.opts.workspace, "--output-dir", this.opts.outputDir],
-        env: { ...getDefaultEnvironment(), [ENV_ADMIN_TOKEN]: this.token },
+        env: { ...getDefaultEnvironment(), ...(this.opts.env ?? {}), [ENV_ADMIN_TOKEN]: this.token },
         stderr: "pipe",
       });
-      const client = new Client({ name: "brain-vscode", version: "0.0.0" });
+      const client = new Client({ name: "brain-vscode", version: "0.0.0" }, this.opts.sample ? { capabilities: { sampling: {} } } : undefined);
+      if (this.opts.sample) {
+        const sample = this.opts.sample;
+        client.setRequestHandler(CreateMessageRequestSchema, async (req, extra) => (await sample(req.params, extra.signal)) as never);
+      }
       transport.stderr?.on("data", (b: Buffer) => this.opts.log(b.toString().trimEnd()));
       client.onclose = () => void this.onClosed(client);
       client.onerror = (e) => this.opts.log(`client error: ${e.message}`);
@@ -86,6 +99,7 @@ export class BrainClient {
         else if (n.params.uri === Resources.usage) void this.refreshUsage();
         else if (n.params.uri === Resources.pendingReview) void this.refreshPending();
         else if (n.params.uri === Resources.costSummary) this.opts.onCost?.();
+        else if (n.params.uri === Resources.generation) void this.refreshGeneration();
       });
       await client.connect(transport);
       this.client = client;
@@ -100,6 +114,7 @@ export class BrainClient {
       await client.subscribeResource({ uri: Resources.usage });
       await client.subscribeResource({ uri: Resources.pendingReview });
       await client.subscribeResource({ uri: Resources.costSummary });
+      await client.subscribeResource({ uri: Resources.generation });
       this.restarts = 0;
       await this.refresh();
       await this.refreshUsage();
@@ -175,6 +190,25 @@ export class BrainClient {
   /** Rejects with a ToolError whose `details` is the list of field errors. */
   setConfig(config: Record<string, unknown>): Promise<Record<string, unknown>> {
     return this.call(AdminTools.setConfig, { config });
+  }
+
+  async refreshGeneration(): Promise<GenerationState | null> {
+    if (!this.client) return null;
+    const res = await this.client.readResource({ uri: Resources.generation });
+    const state = JSON.parse((res.contents[0] as { text: string }).text) as GenerationState;
+    this.opts.onGeneration?.(state);
+    return state;
+  }
+
+  estimateGeneration(scope: Partial<GenerationScope> = {}): Promise<Estimate> {
+    return this.call<Estimate>(AdminTools.estimateGeneration, scope);
+  }
+  /** Starts the job and returns at once. Call only after the person has seen the estimate. */
+  generateDocs(scope: Partial<GenerationScope> = {}): Promise<GenerationState> {
+    return this.call<GenerationState>(AdminTools.generateDocs, { ...scope, confirm: true });
+  }
+  cancelGeneration(): Promise<GenerationState> {
+    return this.call<GenerationState>(AdminTools.cancelGeneration);
   }
 
   async getCostSummary(): Promise<CostSummary> {
