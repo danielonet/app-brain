@@ -2,7 +2,7 @@
 
 **Goal:** a VS Code extension, backed by an MCP server, that builds a "brain" for a codebase: a knowledge base and documentation generated from the code (plus curated human notes), so that AI agents (Copilot, Claude Code, Cursor, …) can do a better job on that codebase.
 
-Status: design draft. Nothing is built yet.
+Status: **built through the MVP and most of Phase 2** (see §7 for each phase, §10 for the decisions that were made, and [PLAN-VSCODE-EXTENSION.md](PLAN-VSCODE-EXTENSION.md) §13 for exactly what is built, what is not, and what comes next). The architecture in §3 changed in one respect: the server does the file watching and the extension is a front end only.
 
 ---
 
@@ -142,14 +142,18 @@ Keep it to about 8 well-described tools. Return compact output (paths, line rang
 
 **Prompts:** `/onboard`, `/document-module`
 
+*Status:* built are `search_code`, `get_symbol`, `get_neighbors`, `impact_of_change`, `get_overview`, `list_undocumented` and `save_summary`, plus a `get_graph` tool that was not in this list. Resources are `brain://status`, `config`, `usage`, `coverage`, `generation`, `knowledge/pending-review` and `cost/summary`; the `brain://architecture` and `brain://module/{path}` resources were not built (`get_overview` returns a module's or file's reviewed doc instead). Not built: `read_notes` and `add_note`, and the two prompts.
+
 ---
 
 ## 7. Roadmap
 
-- **Phase 0 — spike (~1 week):** tree-sitter → SQLite for one language, plus an MCP server with `search_code` and `get_symbol`. Try it in Claude Code on a real repo.
-- **Phase 1 — MVP:** VS Code extension, incremental indexing, LSP bridge, `.brain/` notes, staleness tracking. Two languages (e.g. TypeScript and Python).
-- **Phase 2:** documentation generation with review, embeddings and combined search, export of docs as a static markdown site.
-- **Phase 3:** SCIP ingestion in CI, team sharing, multi-repo graphs.
+- **Phase 0 — spike: done.** tree-sitter → SQLite, an MCP server with `search_code` and `get_symbol`.
+- **Phase 1 — MVP: mostly done.** Done: the VS Code extension, incremental indexing, staleness tracking, TypeScript and Python (with TSX and JavaScript). **Not done:** the LSP bridge and `.brain/` notes (`add_note`, `read_notes`).
+- **Phase 2: partly done.**
+  - Done: documentation generation with review (agent-written, or written by the server with an API key, the editor's model, or a local model), a knowledge base in OKF format, a dependency graph, cost reporting, and reporting of what Claude Code and an Anthropic organisation used.
+  - **Not done:** embeddings and combined search, and export of docs as a static markdown site.
+- **Phase 3: not started** beyond the pieces that came early (the shared daemon, the JSON-LD graph export): SCIP ingestion in CI, team sharing, multi-repo graphs.
 
 ---
 
@@ -174,13 +178,18 @@ Without this, "makes AI better" cannot be tuned.
 
 ---
 
-## 10. Open decisions
+## 10. Decisions
 
-- **Implementation language.** The design assumes TypeScript throughout (the VS Code extension must be JS/TS, and one shared core avoids two codebases). The repo's current `.gitignore` is the Python template; update it once this is decided.
-- **Process topology.** Who owns database writes: the extension, the MCP server, or both via WAL?
-- **SQLite packaging** inside the extension (platform-specific VSIX vs. out-of-process).
-- **Default LLM path** for doc generation beyond the MVP (options b–d in §5).
-- **First two languages** for Phase 1.
+**Made during the build**
+
+- **Implementation language:** TypeScript throughout, as proposed. The repository is an npm workspace of three packages (`brain-protocol`, `brain-mcp`, `brain-vscode`); the Python `.gitignore` template is gone.
+- **Process topology:** one shared server process per workspace owns the database and the file watching, and every client (the extension, Claude Code, Copilot, Cursor) talks to it. The extension never writes to the database.
+- **SQLite packaging:** Node's built-in `node:sqlite` with FTS5 inside the server process (Node 22.16 or newer). No native module, so no Electron ABI problem, and no `sqlite-vec` yet, because there are no embeddings yet.
+- **Default LLM path:** all of (a) to (d) in §5 exist: the agent itself, the editor's model, a Claude API key, and a local model. The default, `auto`, uses the editor's model or the connected agent and never an API key or a local model unless the user chooses one.
+- **First two languages:** TypeScript and Python.
+- **Where the extension stops:** it holds no parsing, indexing, ranking, generation or storage logic; it can be uninstalled and the server still works in other clients.
+
+**Still open:** whether to commit generated docs by default (recommended: only reviewed ones), and how far to go with semantic search before the benchmarks in §8 exist.
 
 ---
 
