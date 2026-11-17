@@ -1,23 +1,30 @@
 name: Publish
 
-# Publishes to the Visual Studio Marketplace when a version tag (vX.Y.Z) is pushed.
-# The version is the one in packages/brain-vscode/package.json (the extension manifest).
-# Release flow:  npm version patch --workspace packages/brain-vscode --no-git-tag-version
-#                git commit -am "Release vX.Y.Z" && git tag vX.Y.Z
-#                git push --follow-tags
+# Publishes to the Visual Studio Marketplace, and creates a GitHub release with the .vsix attached.
 #
-# One-time setup (outside this repo): a Marketplace publisher whose id matches the
-# "publisher" field in packages/brain-vscode/package.json, with this repository and
-# workflow configured as a trusted publisher. The publisher is danielonnet; the policy "app brain workflow" points at this file (publish.yml).
+# Release flow: change the version in packages/brain-vscode/package.json (the extension manifest) in a pull
+# request, and merge it. The push to main starts this workflow; it publishes when no tag for that version
+# exists yet, then creates the tag vX.Y.Z (through the release), so the same version is never published twice.
+# Pushing a tag vX.Y.Z by hand also publishes, and its tag must match the manifest version.
+# A manual run (workflow_dispatch) only tests and packages.
+#
+# One-time setup (outside this repo): the Marketplace publisher in the manifest (danielonnet) has this
+# repository and this file (publish.yml) as a trusted publisher, the policy "app brain workflow".
 
 on:
   push:
+    branches: [main]
+    paths: ['packages/brain-vscode/package.json'] # any other push to main only runs CI
     tags: ['v*.*.*']
   workflow_dispatch:
 
 permissions:
-  contents: write # to attach the .vsix to a GitHub release
+  contents: write # to create the release and its tag
   id-token: write # OIDC token for Marketplace trusted publishing
+
+concurrency:
+  group: publish
+  cancel-in-progress: false # never stop a publish half way
 
 jobs:
   publish:
@@ -29,17 +36,31 @@ jobs:
         with:
           node-version-file: .nvmrc # node:sqlite needs 22.16+
           cache: npm
-      - run: npm ci
 
-      - name: Check tag matches the extension version
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Decide whether to publish
+        id: plan
         run: |
-          PKG="v$(node -p "require('./packages/brain-vscode/package.json').version")"
-          if [ "$PKG" != "$GITHUB_REF_NAME" ]; then
-            echo "Tag $GITHUB_REF_NAME does not match packages/brain-vscode/package.json version $PKG" >&2
-            exit 1
+          VERSION="$(node -p "require('./packages/brain-vscode/package.json').version")"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if [ "${{ startsWith(github.ref, 'refs/tags/v') }}" = "true" ]; then
+            if [ "v$VERSION" != "$GITHUB_REF_NAME" ]; then
+              echo "Tag $GITHUB_REF_NAME does not match the extension version v$VERSION" >&2
+              exit 1
+            fi
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          elif [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            if git ls-remote --exit-code --tags origin "refs/tags/v$VERSION" >/dev/null 2>&1; then
+              echo "v$VERSION is already released; nothing to publish."
+              echo "publish=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "publish=true" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "Manual run: testing and packaging only."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - run: npm ci
       - name: Install Chromium for the webview tests
         run: |
           npm install --no-save playwright
@@ -50,13 +71,19 @@ jobs:
         run: scripts/build-and-install.sh --package-only
 
       - name: Publish to Visual Studio Marketplace
-        # A manual run (workflow_dispatch) only tests and packages; publishing needs a version tag.
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: steps.plan.outputs.publish == 'true'
         # Trusted publishing: authenticates via the job's GitHub OIDC token (no PAT).
         run: npx --yes @vscode/vsce@latest publish --oidc --packagePath app-brain.vsix
 
       - name: GitHub release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: steps.plan.outputs.publish == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" app-brain.vsix --generate-notes
+        # Creates the tag v<version> at this commit when it does not exist yet.
+        run: gh release create "v${{ steps.plan.outputs.version }}" app-brain.vsix --generate-notes --target "$GITHUB_SHA"
+
+      - uses: actions/upload-artifact@v4
+        if: steps.plan.outputs.publish == 'false'
+        with:
+          name: app-brain-vsix
+          path: app-brain.vsix
