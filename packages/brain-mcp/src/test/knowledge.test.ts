@@ -395,7 +395,7 @@ describe("approving many drafts at once", () => {
       const text = readFileSync(file, "utf8");
       for (const m of text.matchAll(/\]\((\.{1,2}\/[^)\s]+)\)/g)) {
         const resolved = path.resolve(path.dirname(file), decodeURIComponent(m[1]));
-        if (!TARGETS.some((x) => resolved.endsWith("/" + x + ".md"))) continue; // a neighbour nobody has documented yet: there is nothing to open
+        if (!TARGETS.some((x) => resolved.split(path.sep).join("/").endsWith("/" + x + ".md"))) continue; // a neighbour nobody has documented yet: there is nothing to open
         assert.equal(existsSync(resolved), true, `${t}: ${m[1]} opens`);
         followed++;
       }
