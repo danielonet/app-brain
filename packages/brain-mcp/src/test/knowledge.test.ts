@@ -459,9 +459,12 @@ describe("links in documents written before they were relative", () => {
       c = await connect(ws, { admin: true, clientName: "brain-vscode" });
       admin = c;
       await ready(c, 4);
-      for (let i = 0; i < 200 && readFileSync(file, "utf8") === legacy; i++) await new Promise((r) => setTimeout(r, 100));
-      assert.equal(readFileSync(file, "utf8"), before, `back to the relative link, and nothing else changed (log: ${JSON.stringify(readFileSync(path.join(ws, ".brain/knowledge/log.md"), "utf8"))})`);
-      assert.match(readFileSync(path.join(ws, ".brain/knowledge/log.md"), "utf8"), /rewritten as relative links/);
+      // The document is written first, then the indexes are regenerated, then the log entry: wait for the last of those.
+      const logFile = path.join(ws, ".brain/knowledge/log.md");
+      for (let i = 0; i < 200 && !/rewritten as relative links/.test(readFileSync(logFile, "utf8")); i++) await new Promise((r) => setTimeout(r, 100));
+      assert.equal(readFileSync(file, "utf8"), before, "back to the relative link, and nothing else changed");
+      assert.match(readFileSync(logFile, "utf8"), /rewritten as relative links/);
+      assert.match(readFileSync(path.join(ws, ".brain/knowledge/index.md"), "utf8"), /\]\(\.\/files\/index\.md\)/, "the indexes use relative links again too");
     } finally { await admin?.close(); cleanDir(ws); }
   });
 });
