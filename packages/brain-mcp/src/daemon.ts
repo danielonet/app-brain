@@ -90,7 +90,15 @@ async function acquireLock(dir: string): Promise<() => Promise<void>> {
       if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
     }
     let holder: { pid?: number; startedAt?: number } | null = null;
-    try { holder = JSON.parse(await fs.readFile(lock, "utf8")); } catch { /* unreadable: treat as stale */ }
+    try { holder = JSON.parse(await fs.readFile(lock, "utf8")); } catch {
+      // Empty or half written: the holder created the file an instant ago and has not written its pid yet. That is a daemon
+      // starting, not a stale lock; removing it would let a second daemon in. Only an old unreadable lock is a crash's leftover.
+      try {
+        if (Date.now() - (await fs.stat(lock)).mtimeMs < STARTING_GRACE_MS) throw new DaemonAlreadyRunning(null);
+      } catch (e) {
+        if (e instanceof DaemonAlreadyRunning) throw e; // gone since: the next attempt takes it
+      }
+    }
     if (holder?.pid && holder.pid !== process.pid && pidAlive(holder.pid)) {
       const info = await readDaemonInfo(dir);
       if (info && (await daemonHealthy(info))) throw new DaemonAlreadyRunning(info);

@@ -125,6 +125,7 @@ export const ConfigSchema = z
           inputPerMtok: z.number().nonnegative().describe("Input price, USD per million tokens."),
           outputPerMtok: z.number().nonnegative().describe("Output price, USD per million tokens."),
           cachedPerMtok: z.number().nonnegative().optional().describe("Cached-input price, USD per million tokens (optional)."),
+          cacheWritePerMtok: z.number().nonnegative().optional().describe("Price of writing input to the prompt cache, USD per million tokens (optional; only used to price Claude Code usage, where it defaults to 1.25 times the input price)."),
         }),
       )
       .describe("USD per million tokens, by model id. Edited by the user; never hard-coded.")
@@ -410,6 +411,55 @@ export const CostSummarySchema = z.object({
   recent: z.array(CostCallSchema),
 });
 export type CostSummary = z.infer<typeof CostSummarySchema>;
+
+// ---------------------------------------------------------------------------
+// Provider usage: what the agents' own providers report, shown beside the brain's own cost.
+// Built in the editor from local Claude Code logs and the Anthropic Admin API. Never written to disk.
+// ---------------------------------------------------------------------------
+
+export interface UsageTotals {
+  messages: number;
+  inputTokens: number; // not served from the cache
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  outputTokens: number;
+  /** Dollars; null when it cannot be known (a model has no price). */
+  costUsd: number | null;
+}
+export type UsageByModel = UsageTotals & { model: string };
+export type UsageByDay = UsageTotals & { day: string };
+
+export interface ProviderUsageBlock {
+  /** ok: there is data. off: the user has not turned it on. none: on, but nothing found. error: it failed (see message). */
+  state: "ok" | "off" | "none" | "error";
+  message: string;
+  from: string | null;
+  to: string | null;
+  totals: UsageTotals;
+  byModel: UsageByModel[];
+  byDay: UsageByDay[];
+  /** False when some usage could not be priced, so costUsd is a lower bound. */
+  complete: boolean;
+  unpricedModels: string[];
+}
+
+export interface ClaudeCodeUsage extends ProviderUsageBlock {
+  /** Where the logs were read from, for the "where does this come from" line. */
+  source: string | null;
+  sessions: number;
+}
+
+export interface AnthropicOrgUsage extends ProviderUsageBlock {
+  /** True when cost is the amount Anthropic billed; false when it is worked out from the price table. */
+  costIsBilled: boolean;
+}
+
+export interface ProviderUsage {
+  generatedAt: string;
+  lookbackDays: number;
+  claudeCode: ClaudeCodeUsage;
+  anthropicOrg: AnthropicOrgUsage;
+}
 
 // ---------------------------------------------------------------------------
 // Server-side doc generation

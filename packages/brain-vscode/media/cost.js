@@ -130,7 +130,7 @@
   const tableView = (title, columns, rows) => h("details", {}, h("summary", { text: "Table view: " + title }), table(columns, rows));
 
   // ---- the page --------------------------------------------------------------------------------------------
-  let summary = null, metric = "cost";
+  let summary = null, metric = "cost", usage = null, usageError = null;
 
   function metricRows(list, key, axis) {
     const m = METRICS[metric];
@@ -143,6 +143,7 @@
     if (t.calls === 0) {
       root.append(h("div", { id: "empty" }, h("p", { text: "No documentation has been generated yet." }), h("p", { class: "muted", text: "Cost appears here once an agent calls save_summary. Set model prices in the settings first to see dollar amounts." }),
         h("button", { type: "button", onclick: () => api.postMessage({ type: "openSettings" }), text: "Open settings" })));
+      providers(root);
       return;
     }
 
@@ -213,7 +214,70 @@
         { head: "Outcome", cell: (c) => c.outcome, cls: (c) => (c.outcome === "approved" ? "ok" : c.outcome === "rejected" ? "bad" : "") },
       ], sm.recent),
       h("p", { class: "muted", text: "* priced now from today's price table, because no price was set when the call was made." })));
+    providers(root);
   }
+
+  // ---- what the providers report (Claude Code's logs, the Anthropic organisation) -------------------------------
+  const PROVIDER_FIELD = { cost: "costUsd", tokens: "outputTokens", calls: "messages" };
+  const dayCount = (n) => n + (n === 1 ? " day" : " days");
+
+  function providerRows(list, key, axis) {
+    const f = PROVIDER_FIELD[metric];
+    return list.map((x) => ({ label: key(x), axis: axis ? axis(x) : "", value: x[f] === null || x[f] === undefined ? 0 : x[f] }));
+  }
+
+  function providerCard(id, title, sub, block, extra) {
+    const m = METRICS[metric];
+    const card = h("section", { class: "card", id }, h("h2", { text: title }), h("p", { class: "sub", text: sub }));
+    if (block.state !== "ok") {
+      card.append(h("div", { class: "notice " + (block.state === "error" ? "bad" : ""), role: block.state === "error" ? "alert" : "status", id: id + "-state" }, h("div", {}, h("span", { text: block.message })), extra ? extra(block) : null));
+      return card;
+    }
+    const t = block.totals;
+    if (!block.complete) {
+      card.append(h("div", { class: "notice", role: "status" }, h("span", { class: "icon", "aria-hidden": "true", text: "⚠" }), h("div", {}, h("strong", { text: "The cost is a lower bound." }), " No price is set for: " + block.unpricedModels.join(", ") + ". ", h("button", { type: "button", class: "link", text: "Set prices", onclick: () => api.postMessage({ type: "openSettings" }) }))));
+    }
+    card.append(h("p", { class: "muted", id: id + "-note", text: block.message }));
+    const tile = (label, value, tid) => h("div", { class: "tile" }, h("div", { class: "v", id: tid, text: value }), h("div", { class: "l", text: label }));
+    card.append(h("div", { class: "tiles" },
+      tile(block.complete ? "Cost" : "Known cost", usd(t.costUsd), id + "-cost"), tile("Messages", t.messages ? String(t.messages) : "n/a", id + "-messages"),
+      tile("Tokens out", compact(t.outputTokens), id + "-out"), tile("Tokens in (uncached)", compact(t.inputTokens), id + "-in"),
+      tile("Cache reads", compact(t.cacheReadTokens), id + "-read"), tile("Cache writes", compact(t.cacheWriteTokens), id + "-write")));
+    const days = providerRows(block.byDay, (d) => d.day, (d) => shortDay(d.day));
+    card.append(h("h3", { text: m.label + " by day" }), columns(days, m.fmt, m.label + " by day, " + title),
+      tableView("by day, " + title, [{ head: "Day", cell: (r) => r.label }, { head: m.label, num: true, cell: (r) => m.fmt(r.value) }], days));
+    const models = providerRows(block.byModel, (x) => x.model).sort((a, b) => b.value - a.value);
+    card.append(h("h3", { text: m.label + " by model" }), rankedBars(models, m.fmt),
+      table([
+        { head: "Model", cell: (x) => x.model },
+        { head: "Messages", num: true, cell: (x) => (x.messages ? String(x.messages) : "n/a") },
+        { head: "In", num: true, cell: (x) => compact(x.inputTokens) },
+        { head: "Cache read", num: true, cell: (x) => compact(x.cacheReadTokens) },
+        { head: "Cache write", num: true, cell: (x) => compact(x.cacheWriteTokens) },
+        { head: "Out", num: true, cell: (x) => compact(x.outputTokens) },
+        { head: "Cost", num: true, cell: (x) => usd(x.costUsd), cls: (x) => (x.costUsd === null ? "flag" : "") },
+      ], block.byModel, title + " by model"));
+    return card;
+  }
+
+  function providers(root) {
+    root.append(h("section", { id: "providers" }, h("h2", { text: "What your providers report" }),
+      h("p", { class: "sub", text: "Separate from the cost above, and never added to it: this is what the tools themselves used, which is more than the brain's own calls." })));
+    const box = $("providers");
+    if (usageError) { box.append(h("div", { class: "notice", role: "alert", id: "usage-error", text: usageError })); return; }
+    if (!usage) { box.append(h("p", { class: "muted", id: "usage-loading", text: "Reading provider usage…" })); return; }
+    const cc = usage.claudeCode, org = usage.anthropicOrg;
+    box.append(providerCard("claude-code", "Claude Code in this workspace",
+      `Last ${dayCount(usage.lookbackDays)}, from Claude Code's own logs on this machine` + (cc.source ? ` (${cc.source})` : "") + ". Only this repository.", cc,
+      (b) => (b.state === "off" ? h("button", { type: "button", class: "link", text: "Turn on in settings", onclick: () => api.postMessage({ type: "openUsageSettings" }) }) : null)));
+    box.append(providerCard("anthropic-org", "Anthropic organisation",
+      `Last ${dayCount(usage.lookbackDays)}, from Anthropic's Usage and Cost API. The whole organisation behind the key, not just this repository.`, org,
+      (b) => (b.state === "off" ? h("button", { type: "button", class: "primary", text: "Set Admin key", onclick: () => api.postMessage({ type: "setAnthropicKey" }) }) : null)));
+    box.append(h("p", { class: "muted", text: "Copilot and Cursor are not shown: Copilot reports premium requests rather than tokens, and Cursor's usage API is for team admins only." }));
+  }
+
+  /** If the cost summary could not be loaded (no server), the provider sections still stand on their own. */
+  function showUsageOnly() { const root = $("root"); root.textContent = ""; providers(root); }
 
   $("refresh").addEventListener("click", () => api.postMessage({ type: "refresh" }));
   $("export").addEventListener("click", () => api.postMessage({ type: "export" }));
@@ -222,6 +286,8 @@
     const msg = event.data;
     if (!msg || typeof msg !== "object") return;
     if (msg.type === "cost") { summary = msg.summary; $("error").hidden = true; $("stamp").textContent = "Updated " + new Date(summary.generatedAt).toLocaleTimeString(); render(); }
+    else if (msg.type === "usage") { usage = msg.usage; usageError = null; if (summary) render(); else showUsageOnly(); }
+    else if (msg.type === "usageError") { usageError = msg.message; if (summary) render(); else showUsageOnly(); }
     else if (msg.type === "error") { $("error").hidden = false; $("error").textContent = msg.message; }
   });
 

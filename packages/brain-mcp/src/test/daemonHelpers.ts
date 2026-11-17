@@ -71,6 +71,10 @@ export function raw(info: DaemonInfo, o: { method?: string; path?: string; heade
       res.on("end", () => resolve({ status: res.statusCode ?? 0, body }));
     });
     req.on("error", reject);
+    // A server that refuses an oversized body closes the connection while we are still writing it. On some systems (macOS)
+    // that surfaces as an EPIPE on the socket itself, which nothing else listens to and which would end the whole test run.
+    // For a caller it is just another way to be refused, so it goes to the same place as any request error.
+    req.on("socket", (socket) => socket.on("error", reject));
     if (o.body) req.write(o.body);
     req.end();
   });

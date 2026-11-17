@@ -1,12 +1,12 @@
 import { strict as assert } from "node:assert";
-import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, symlinkSync, writeFileSync, statSync, chmodSync, rmSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, symlinkSync, writeFileSync, statSync, chmodSync, rmSync, utimesSync } from "node:fs";
 import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 import { describe, it } from "node:test";
 import { ResourceUpdatedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
 import {
-  AdminTools, AgentTools, DAEMON_INFO_FILE, DaemonInfoSchema, Resources, daemonHealthy, ensureRuntimeDir, llmFingerprint, pidAlive,
+  AdminTools, AgentTools, DAEMON_INFO_FILE, DAEMON_LOCK_FILE, DaemonInfoSchema, Resources, daemonHealthy, ensureRuntimeDir, llmFingerprint, pidAlive,
   readDaemonInfo, runtimeDir, runtimeBase, workspaceKey, writeDaemonInfo,
 } from "@app-brain/brain-protocol";
 import { bearerOk, isAllowedHost, isLoopback } from "../daemon";
@@ -352,6 +352,24 @@ describe("the daemon", () => {
       await Promise.all(racers.map((r) => r.exit));
       e2.cleanup();
     } finally { first.kill(); await first.exit; e.cleanup(); }
+  });
+
+  it("treats a lock that is still being written as a daemon starting, never as a stale one to remove", async () => {
+    // The holder creates the lock, then writes its pid. In that gap the file is empty; a second daemon must not delete it.
+    const e = setup();
+    const lock = path.join(ensureRuntimeDir(runtimeDir(e.ws, e.env)), DAEMON_LOCK_FILE);
+    try {
+      writeFileSync(lock, "");
+      const second = await startDaemonProc(e, { wait: false });
+      assert.equal(await second.exit, 0);
+      assert.match(second.stderr(), /is starting/);
+      assert.equal(existsSync(lock), true, "the lock is still there");
+      // an unreadable lock that is old is a crash's leftover, and is replaced
+      const old = new Date(Date.now() - 60_000);
+      utimesSync(lock, old, old);
+      const third = await startDaemonProc(e);
+      try { assert.equal(await daemonHealthy(third.info), true); } finally { third.kill(); await third.exit; }
+    } finally { e.cleanup(); }
   });
 
   it("recovers from a daemon that was killed without cleaning up", async () => {

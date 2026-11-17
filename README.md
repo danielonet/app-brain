@@ -27,6 +27,13 @@ Generate application context out of a code base: a knowledge base an AI agent ca
 
 **Cost.** Every `save_summary` is recorded with the model, token counts and where they came from (reported by the agent, or estimated). A call made before its model had a price is priced from today's table, but only when both token counts are known; otherwise the report says the total is a lower bound and why. The budget cap stops the server's own generation before it would go over; it cannot stop an agent that calls `save_summary` on its own.
 
+**Provider usage.** Under the brain's own cost, **Cost & Models** shows what the tools themselves report, kept apart from it and never added to it:
+
+- **Claude Code in this workspace**, read from the session logs Claude Code keeps on this machine (`~/.claude/projects`, or `CLAUDE_CONFIG_DIR`). On by default; only token counts, the model, the time and the working directory are read, never what was typed or answered. Cost is worked out from your price table (cache reads at 0.1x the input price and cache writes at 1.25x or 2x unless the table says otherwise), so it is what the API would charge, not what a subscription costs you.
+- **Anthropic organisation**, from the Usage and Cost Admin API: tokens by day and model, and the dollars Anthropic billed. Off by default. It needs an Admin API key from a Claude Console organisation (**Brain: Set Anthropic Admin Key**; it goes in VS Code's secret storage and only to api.anthropic.com), and it covers the whole organisation, not just this repository. Settings: `brain.usage.claudeCodeLogs`, `brain.usage.anthropicAdmin.enabled`, `brain.usage.lookbackDays` (1 to 90, default 30).
+
+Copilot and Cursor are not included: Copilot reports premium requests rather than tokens, and Cursor's usage API is for team admins only.
+
 **One shared server.** By default (`brain.server.transport`: `http`) the extension starts one `brain-mcp` daemon per workspace on `127.0.0.1` and every client uses it: the extension, and any agent whose usual stdio config (`node packages/brain-mcp/out/cli.js --workspace …`, see **Brain: Copy MCP Config**) quietly becomes a proxy to it. The code is indexed once, and the extension shows what agents ask as it happens. Details and the security model are in [PLAN-VSCODE-EXTENSION.md](PLAN-VSCODE-EXTENSION.md) §2 and §8. In short:
 
 - It listens on loopback only, needs a bearer token, and rejects browser requests and unexpected `Host` headers.
