@@ -6,6 +6,7 @@ import * as vscode from "vscode";
 import { readDaemonInfo, runtimeDir, workspaceKey, type BrainStatus, type GenerationScope, type GenerationState, type PendingItem, type UsageSummary } from "@app-brain/brain-protocol";
 import { BrainClient } from "./client";
 import { CostPanel } from "./costPanel";
+import { collectProviderUsage } from "./providerUsage";
 import { GraphPanel } from "./graphPanel";
 import { SettingsPanel } from "./settingsPanel";
 import { ActivityItem, ConnState, ReviewRow, activityItems, estimateDetail, estimateTitle, flashText, generationBarText, generationProblems, generationProgress, generationSummary, llmTestSummary, mcpConfigSnippet, reviewRows, statusBarText, validationReport, validationSummary } from "./format";
@@ -111,6 +112,18 @@ export async function activate(context: vscode.ExtensionContext) {
 
   let warnedNoAgent = false;
   const API_KEY = "brain.llm.apiKey";
+  const ADMIN_KEY = "brain.usage.anthropicAdminKey";
+  /** What the providers report (Claude Code's local logs, the Anthropic organisation), for the cost view. */
+  const loadProviderUsage = async () => {
+    let pricing = {};
+    try { pricing = ((await client?.getConfig())?.pricing as object | undefined) ?? {}; } catch { /* no server: logs can still be priced from nothing, and say so */ }
+    return collectProviderUsage({
+      workspace: folder.uri.fsPath,
+      pricing,
+      settings: { claudeCodeLogs: cfg().get<boolean>("usage.claudeCodeLogs", true), anthropicAdmin: cfg().get<boolean>("usage.anthropicAdmin.enabled", false), lookbackDays: cfg().get<number>("usage.lookbackDays", 30) },
+      adminKey: await context.secrets.get(ADMIN_KEY),
+    });
+  };
   const llmSettings = () => ({
     mode: cfg().get<string>("llm.mode", "auto"),
     model: cfg().get<string>("llm.model", ""),
@@ -388,6 +401,25 @@ export async function activate(context: vscode.ExtensionContext) {
       void vscode.window.showInformationMessage("API key saved. Set “brain.llm.mode” to “api-key” to use it.");
       await restart();
     }),
+    vscode.commands.registerCommand("brain.setAnthropicAdminKey", async () => {
+      const key = await vscode.window.showInputBox({
+        title: "Anthropic Admin API key",
+        prompt: "Paste an Admin API key (starts with sk-ant-admin) from a Claude Console organisation. It is kept in VS Code's secret storage and sent only to api.anthropic.com, to read your organisation's usage.",
+        password: true,
+        ignoreFocusOut: true,
+        validateInput: (v) => (/^sk-ant-admin[A-Za-z0-9_-]{8,}$/.test(v.trim()) ? undefined : "That does not look like an Admin API key. They start with sk-ant-admin; a normal API key cannot read usage."),
+      });
+      if (key === undefined) return;
+      await context.secrets.store(ADMIN_KEY, key.trim());
+      await cfg().update("usage.anthropicAdmin.enabled", true, vscode.ConfigurationTarget.Global);
+      void vscode.window.showInformationMessage("Anthropic Admin key saved. Open Brain: Show Cost & Models to see your organisation's usage.");
+      CostPanel.refreshIfOpen();
+    }),
+    vscode.commands.registerCommand("brain.clearAnthropicAdminKey", async () => {
+      await context.secrets.delete(ADMIN_KEY);
+      void vscode.window.showInformationMessage("Anthropic Admin key removed.");
+      CostPanel.refreshIfOpen();
+    }),
     vscode.commands.registerCommand("brain.clearApiKey", async () => {
       await context.secrets.delete(API_KEY);
       void vscode.window.showInformationMessage("API key removed.");
@@ -436,7 +468,7 @@ export async function activate(context: vscode.ExtensionContext) {
     ),
     vscode.commands.registerCommand("brain.generateDocs", () => run("generate docs", () => generateDocs())),
     vscode.commands.registerCommand("brain.cancelGeneration", () => run("cancel", async () => void (await client?.cancelGeneration()))),
-    vscode.commands.registerCommand("brain.showCost", () => CostPanel.show(context.extensionUri, () => client, folder.uri.fsPath)),
+    vscode.commands.registerCommand("brain.showCost", () => CostPanel.show(context.extensionUri, () => client, folder.uri.fsPath, loadProviderUsage)),
     vscode.commands.registerCommand("brain.exportCostReport", () =>
       run("export cost report", async () => {
         const r = await client!.exportCostReport();

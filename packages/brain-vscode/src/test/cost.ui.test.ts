@@ -8,6 +8,8 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport, getDefaultEnvironment } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { AdminTools, AgentTools, CostSummary, ENV_ADMIN_TOKEN, Resources } from "@app-brain/brain-protocol";
 import { costHtml } from "../costHtml";
+import type { ProviderUsage } from "@app-brain/brain-protocol";
+import { collectProviderUsage } from "../providerUsage";
 import { cleanDir } from "./cleanDir";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -336,5 +338,118 @@ describe("cost view, in a real browser", { skip: !chromium && "playwright is not
     assert.equal(await text(".hero-label"), "Known spend");
     assert.match(await text(".notice[role=status]"), /lower bound/);
     assert.equal(await text("#k-cpd"), "unknown");
+  });
+
+  // ---- what the providers report ---------------------------------------------------------------------------
+  const WS_PATH = "/home/dev/app";
+  const logLine = (id: string, day: string, model: string, o: number) => JSON.stringify({ type: "assistant", uuid: id, cwd: WS_PATH, timestamp: `${day}T10:00:00.000Z`, message: { id, model, content: [], usage: { input_tokens: 1000, output_tokens: o, cache_read_input_tokens: 500_000, cache_creation: { ephemeral_5m_input_tokens: 20_000, ephemeral_1h_input_tokens: 0 } } } });
+
+  /** Provider usage built by the real readers: Claude Code logs on disk, and the Admin API through a fake network. */
+  async function providerUsage(over: { priced?: boolean; adminKey?: string | undefined; enableOrg?: boolean; claudeCode?: boolean } = {}): Promise<ProviderUsage> {
+    const home = mkdtempSync(path.join(tmpdir(), "brain-prov-"));
+    const dir = path.join(home, ".claude", "projects", WS_PATH.replace(/[^A-Za-z0-9]/g, "-"));
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(path.join(dir, "s.jsonl"), [logLine("a", "2026-11-10", "claude-sonnet-5-5", 100_000), logLine("b", "2026-11-11", "claude-sonnet-5-5", 300_000), logLine("c", "2026-11-11", "claude-new-9", 50_000)].join("\n") + "\n");
+    const fetch = async (url: string) => {
+      const body = url.includes("cost_report")
+        ? { data: [{ starting_at: "2026-11-10T00:00:00Z", results: [{ currency: "USD", amount: "250", model: "claude-sonnet-5-5" }] }], has_more: false }
+        : { data: [{ starting_at: "2026-11-10T00:00:00Z", results: [{ model: "claude-sonnet-5-5", uncached_input_tokens: 2_000_000, output_tokens: 400_000, cache_read_input_tokens: 0 }] }], has_more: false };
+      return { ok: true, status: 200, json: async () => body, text: async () => "" };
+    };
+    try {
+      return await collectProviderUsage({
+        workspace: WS_PATH, home, env: {}, now: new Date("2026-11-12T12:00:00Z"), fetch,
+        pricing: over.priced === false ? {} : { "claude-sonnet-5-5": { inputPerMtok: 3, outputPerMtok: 15, cachedPerMtok: 0.3 }, "claude-new-9": { inputPerMtok: 3, outputPerMtok: 15 } },
+        settings: { claudeCodeLogs: over.claudeCode !== false, anthropicAdmin: over.enableOrg ?? true, lookbackDays: 30 },
+        adminKey: "adminKey" in over ? over.adminKey : "sk-ant-admin01-TESTKEYTESTKEY",
+      });
+    } finally { cleanDir(home); }
+  }
+
+  it("says the providers' numbers are separate from the brain's own cost, and shows a loading line until they arrive", async () => {
+    await open(real);
+    assert.match(await text("#providers .sub"), /never added to it/);
+    assert.match(await text("#usage-loading"), /Reading provider usage/);
+    await send({ type: "usage", usage: await providerUsage() });
+    assert.equal(await page.locator("#usage-loading").count(), 0);
+    assert.equal(await text("#hero"), "$1.06", "the brain's own spend is untouched by the provider numbers");
+  });
+
+  it("shows Claude Code's usage in this workspace exactly as read from the logs", async () => {
+    const usage = await providerUsage();
+    const errors = await open(real);
+    await send({ type: "usage", usage });
+    assert.deepEqual(errors, []);
+    const t = usage.claudeCode.totals;
+    assert.equal(t.messages, 3);
+    assert.equal(await text("#claude-code-messages"), "3");
+    assert.equal(await text("#claude-code-out"), await page.evaluate((n: number) => (window as any).brainCost.compact(n), t.outputTokens));
+    assert.equal(await text("#claude-code-cost"), await page.evaluate((n: number | null) => (window as any).brainCost.usd(n), t.costUsd));
+    assert.equal(await page.locator("#claude-code svg.chart").count(), 1);
+    assert.equal(await page.locator("#claude-code .rows .name").count(), usage.claudeCode.byModel.length);
+    assert.match(await text("#claude-code .sub"), /Only this repository/);
+  });
+
+  it("calls the Claude Code cost a lower bound when a model has no price", async () => {
+    await open(real);
+    await send({ type: "usage", usage: await providerUsage({ priced: false }) });
+    assert.match(await text("#claude-code .notice"), /lower bound/);
+    assert.match(await text("#claude-code .notice"), /claude-sonnet-5-5/);
+    assert.equal(await text("#claude-code .tile .l"), "Known cost");
+    await page.locator("#claude-code .notice button").click();
+    assert.ok((await posted()).some((m) => m.type === "openSettings"));
+  });
+
+  it("shows the Anthropic organisation as the whole organisation, with the cost Anthropic billed", async () => {
+    const usage = await providerUsage();
+    await open(real);
+    await send({ type: "usage", usage });
+    assert.match(await text("#anthropic-org .sub"), /whole organisation/);
+    assert.equal(await text("#anthropic-org-cost"), "$2.50", "250 cents, as the cost report gave it");
+    assert.match(await text("#anthropic-org-note"), /what Anthropic billed/);
+    assert.equal(await text("#anthropic-org-out"), "400K");
+  });
+
+  it("offers to turn a source on when it is off, and never shows an empty chart for it", async () => {
+    await open(real);
+    await send({ type: "usage", usage: await providerUsage({ claudeCode: false, adminKey: undefined }) });
+    assert.match(await text("#claude-code-state"), /turned off/);
+    assert.match(await text("#anthropic-org-state"), /No Anthropic Admin API key/);
+    assert.equal(await page.locator("#providers svg.chart").count(), 0);
+    await page.locator("#claude-code-state button").click();
+    await page.locator("#anthropic-org-state button").click();
+    const msgs = (await posted()).map((m) => m.type);
+    assert.ok(msgs.includes("openUsageSettings") && msgs.includes("setAnthropicKey"));
+  });
+
+  it("shows a failure as an alert, in words, without the key", async () => {
+    await open(real);
+    const usage = await providerUsage();
+    usage.anthropicOrg = { ...usage.anthropicOrg, state: "error", message: "Anthropic refused the key. It must be an Admin API key.", totals: { ...usage.anthropicOrg.totals }, byModel: [], byDay: [] };
+    await send({ type: "usage", usage });
+    assert.equal(await page.locator("#anthropic-org-state").getAttribute("role"), "alert");
+    assert.ok(!(await page.content()).includes("TESTKEY"));
+    assert.equal(await page.locator("#claude-code svg.chart").count(), 1, "the other source is not hidden by it");
+  });
+
+  it("follows the measure toggle for the provider charts too", async () => {
+    await open(real);
+    await send({ type: "usage", usage: await providerUsage() });
+    await page.locator("#toolbar button[data-metric=calls]").click();
+    assert.match(await text("#claude-code h3"), /Calls by day/);
+    assert.equal(await page.locator("#anthropic-org h3").first().textContent(), "Calls by day");
+  });
+
+  it("still shows provider usage when the brain server cannot be reached", async () => {
+    await open(real);
+    await page.evaluate(() => window.dispatchEvent(new MessageEvent("message", { data: { type: "error", message: "The brain server is not running." } })));
+    await send({ type: "usage", usage: await providerUsage() });
+    assert.equal(await page.locator("#claude-code").count(), 1);
+  });
+
+  it("does not scroll sideways on a narrow screen with provider usage", async () => {
+    await open(real, { width: 360 });
+    await send({ type: "usage", usage: await providerUsage() });
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
   });
 });

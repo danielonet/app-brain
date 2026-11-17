@@ -121,3 +121,10 @@ details { margin-top: 8px; } summary { cursor: pointer; color: var(--vscode-text
   .hero { font-size: 44px; }
   .rows { grid-template-columns: 1fr; gap: 2px 0; } .rows .name { margin-top: 8px; }
 }
+
+/* provider usage */
+#providers { margin-top: 28px; }
+#providers > h2 { margin-bottom: 2px; }
+.card h3 { font-size: 1em; margin: 18px 0 6px; font-weight: 600; }
+.notice.bad { border-left-color: var(--vscode-errorForeground, #f14c4c); background: var(--vscode-inputValidation-errorBackground, rgba(241,76,76,.12)); }
+.notice > div { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }

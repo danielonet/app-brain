@@ -43,6 +43,8 @@
       { "command": "brain.chooseLocalModel", "title": "Brain: Choose Local Model…" },
       { "command": "brain.setApiKey", "title": "Brain: Set LLM API Key" },
       { "command": "brain.clearApiKey", "title": "Brain: Clear LLM API Key" },
+      { "command": "brain.setAnthropicAdminKey", "title": "Brain: Set Anthropic Admin Key (usage report)" },
+      { "command": "brain.clearAnthropicAdminKey", "title": "Brain: Clear Anthropic Admin Key" },
       { "command": "brain.showCost", "title": "Brain: Show Cost & Models", "icon": "$(graph)" },
       { "command": "brain.exportCostReport", "title": "Brain: Export Cost Report" },
       { "command": "brain.showGraph", "title": "Brain: Show Dependency Graph", "icon": "$(type-hierarchy)" },
@@ -81,6 +83,23 @@
           "type": "string",
           "default": "",
           "markdownDescription": "Path to the `brain-mcp` entry point (`cli.js`). Empty uses the bundled server."
+        },
+        "brain.usage.claudeCodeLogs": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Show Claude Code's usage in this workspace in **Cost & Models**, read from the session logs Claude Code keeps on this machine (`~/.claude/projects`, or `CLAUDE_CONFIG_DIR`). Only token counts, the model and the time are read; nothing you or Claude wrote is looked at or sent anywhere."
+        },
+        "brain.usage.anthropicAdmin.enabled": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Show your Anthropic organisation's usage and billed cost in **Cost & Models**, fetched from Anthropic's Usage and Cost Admin API. Needs an Admin API key from a Claude Console organisation (**Brain: Set Anthropic Admin Key**); it covers the whole organisation, not just this repository. Only the key's requests to api.anthropic.com leave this machine."
+        },
+        "brain.usage.lookbackDays": {
+          "type": "integer",
+          "default": 30,
+          "minimum": 1,
+          "maximum": 90,
+          "markdownDescription": "How many days back the provider usage in **Cost & Models** covers."
         },
         "brain.server.transport": {
           "type": "string",
