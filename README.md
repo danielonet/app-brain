@@ -34,12 +34,14 @@ Generate application context out of a code base: a knowledge base an AI agent ca
 - It stops when the editor closes if the editor was its only client, leaves itself running for agents or another window otherwise, and exits after ten minutes with nobody connected. If it cannot start, the editor uses a private server and says so.
 - Run it yourself with `node packages/brain-mcp/out/cli.js --daemon --workspace .`; `--no-proxy` makes a stdio server run on its own even when a daemon exists.
 
-**Server-side generation.** **Brain: Generate Docs** lets the server write the drafts itself instead of waiting for an agent. Choose who writes them in the `brain.llm.*` settings (the default, `agent`, does nothing):
+**Server-side generation.** **Brain: Generate Docs** lets the server write the drafts itself instead of waiting for an agent. By default (`auto`) it detects your setup: the editor's language model if there is one, otherwise the connected agent (Claude Code, Cursor, Copilot). If it finds neither, it points you to the LLM settings; choose `local` there to use a model on your machine:
 
 | Mode | Who writes | Tokens and cost | Leaves your machine |
 |---|---|---|---|
 | `api-key` | Claude, through the official SDK, with a key kept in VS Code's secret storage (**Brain: Set LLM API Key**) | Exact, from the API's usage | Yes: source code goes to Anthropic. Anything that looks like a credential is removed first |
-| `vscode-lm` | The editor's own model (for example Copilot), asked over MCP sampling. VS Code asks for consent | Measured by the editor's tokenizer, or estimated | Whatever that model's provider does |
+| `auto` (default) | Detects your setup: the editor's language model if there is one, otherwise the connected agent | As the mode it picks | As the mode it picks |
+| `vscode-lm` | The first available VS Code language model (for example Copilot), asked over MCP sampling. VS Code asks for consent | Measured by the editor's tokenizer, or estimated | Whatever that model's provider does |
+| `agent` | A connected MCP agent (Claude Code, Cursor, Copilot) writes docs through `save_summary` | Reported by the agent, or estimated | Whatever that agent's provider does |
 | `local` | A model you host (Ollama, LM Studio, llama.cpp, any OpenAI-compatible server), picked with `brain.llm.local.preset` and **Brain: Choose Local Model** | Free on this machine or your network; server-reported when it reports usage | Not if the URL is on this machine; otherwise the confirmation says exactly where your code goes |
 
 **Local models** need two things beyond a URL. **Brain: Test LLM Connection** tells you what is wrong in plain words: the server is not running, the model is not pulled, the URL is not on this machine. And `brain.llm.local.contextTokens` must match the context window your server really runs the model with (servers often default to 2 to 4K tokens, and cut longer prompts off silently); prompts are sized to it, anything cut says so in the doc, and files that cannot fit are skipped and reported. See [PLAN-VSCODE-EXTENSION.md](PLAN-VSCODE-EXTENSION.md) §6.1.

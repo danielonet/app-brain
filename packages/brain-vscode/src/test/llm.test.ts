@@ -58,12 +58,14 @@ describe("what reaches the server, and what does not", () => {
 
 describe("the settings offered to the user", () => {
   const props = manifest.contributes.configuration.properties;
-  it("defaults to no server-side generation, so nothing is sent anywhere until the user chooses", () => {
-    assert.equal(props["brain.llm.mode"].default, "agent");
-    assert.deepEqual(props["brain.llm.mode"].enum, ["agent", "vscode-lm", "api-key", "local"]);
-    assert.equal(props["brain.llm.mode"].enumDescriptions.length, 4, "every choice is explained, including what leaves the machine");
-    assert.match(props["brain.llm.mode"].enumDescriptions[2], /source code is sent to Anthropic/);
-    assert.match(props["brain.llm.mode"].enumDescriptions[3], /Nothing leaves your computer/);
+  it("defaults to auto, which detects the editor's model or agent", () => {
+    assert.equal(props["brain.llm.mode"].default, "auto");
+    assert.deepEqual(props["brain.llm.mode"].enum, ["auto", "agent", "vscode-lm", "api-key", "local"]);
+    assert.equal(props["brain.llm.mode"].enumDescriptions.length, 5, "every choice is explained, including what leaves the machine");
+    assert.match(props["brain.llm.mode"].enumDescriptions[2], /Automatically uses the first language model available through VS Code/);
+    assert.match(props["brain.llm.mode"].markdownDescription, /choose \*\*local\*\*/i);
+    assert.match(props["brain.llm.mode"].enumDescriptions[3], /source code is sent to Anthropic/);
+    assert.match(props["brain.llm.mode"].enumDescriptions[4], /only if the URL is local/);
     assert.equal(props["brain.llm.model"].default, "");
     assert.equal(props["brain.llm.baseUrl"].default, "");
   });

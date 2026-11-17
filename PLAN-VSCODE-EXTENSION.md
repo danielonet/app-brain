@@ -118,7 +118,7 @@ Key settings:
 | `languages` | team config | auto-detected | Which tree-sitter grammars to load |
 | `docs.granularity` | team config | `module` | `symbol`, `file`, `module` or `architecture-only` |
 | `docs.autoGenerate` | team config | `false` | Generate on index, or only on request |
-| `llm.mode` | personal | `agent` | `agent` (the user's agent writes docs), `vscode-lm`, `api-key`, `local` |
+| `llm.mode` | personal | `auto` | `auto` (editor language model if available, else the connected agent), `vscode-lm`, `agent` (a connected MCP agent writes docs), `api-key`, `local` |
 | `server.transport` | personal | `http` | `http` (daemon) or `stdio` |
 | `server.command` | personal | bundled | Path to the `brain-mcp` entry point, for development |
 | `commitKnowledge` | team config | `true` | Whether `.brain/knowledge` (the OKF bundle) is meant to be committed (affects the generated `.gitignore`) |
@@ -376,7 +376,7 @@ The graph is the point of choosing OKF, so its construction is explicit.
 
 | Setting | Default | Why it exists |
 |---|---|---|
-| `brain.llm.mode` = `local` | `agent` | Selects the mode. Nothing is sent anywhere until the user chooses one |
+| `brain.llm.mode` = `local` | `auto` | Selects the mode. By default, the extension detects the editor model or connected agent; choose `local` to use a model hosted by the user |
 | `brain.llm.local.preset` | `ollama` | Fills in the server's usual address: Ollama `:11434`, LM Studio `:1234`, llama.cpp `:8080`, or `custom` |
 | `brain.llm.baseUrl` | empty | Overrides the preset's address (a GPU box on the network, a non-default port) |
 | `brain.llm.model` | required | The model id. **Brain: Choose Local Model** lists what the server actually has, so it is picked, not typed |

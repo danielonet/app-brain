@@ -9,6 +9,7 @@ import { CostPanel } from "./costPanel";
 import { GraphPanel } from "./graphPanel";
 import { SettingsPanel } from "./settingsPanel";
 import { ActivityItem, ConnState, ReviewRow, activityItems, estimateDetail, estimateTitle, flashText, generationBarText, generationProblems, generationProgress, generationSummary, llmTestSummary, mcpConfigSnippet, reviewRows, statusBarText, validationReport, validationSummary } from "./format";
+import { resolveAutoMode } from "./agentDetect";
 import { daemonLlm, llmEnv, localProblems, validateApiKey } from "./llmEnv";
 import { ensureDaemon, stopDaemon } from "./daemonManager";
 import { sampleWithEditorModel } from "./lmBridge";
@@ -108,9 +109,10 @@ export async function activate(context: vscode.ExtensionContext) {
     }
   };
 
+  let warnedNoAgent = false;
   const API_KEY = "brain.llm.apiKey";
   const llmSettings = () => ({
-    mode: cfg().get<string>("llm.mode", "agent"),
+    mode: cfg().get<string>("llm.mode", "auto"),
     model: cfg().get<string>("llm.model", ""),
     baseUrl: cfg().get<string>("llm.baseUrl", ""),
     effort: cfg().get<string>("llm.effort", ""),
@@ -144,8 +146,27 @@ export async function activate(context: vscode.ExtensionContext) {
     return t;
   };
 
+  /** "auto" becomes a concrete mode here, so the server only ever sees one it knows. */
+  const resolveSettings = async () => {
+    const configured = llmSettings();
+    if (configured.mode !== "auto") return { settings: configured, auto: null };
+    const auto = resolveAutoMode({
+      lmModels: (await vscode.lm.selectChatModels()).length,
+      appName: vscode.env.appName,
+      extensionIds: vscode.extensions.all.map((x) => x.id),
+    });
+    out.appendLine(`auto: ${auto.mode}, ${auto.reason}`);
+    return { settings: { ...configured, mode: auto.mode }, auto };
+  };
+
   const make = async () => {
-    const settings = llmSettings();
+    const { settings, auto } = await resolveSettings();
+    if (auto && auto.mode === "agent" && auto.agents.length === 0 && !warnedNoAgent) {
+      warnedNoAgent = true;
+      void vscode.window
+        .showInformationMessage("App Brain found no AI agent in this editor. To write docs with a model on your machine, choose Local in the LLM settings.", "Open LLM settings")
+        .then((pick) => (pick ? vscode.commands.executeCommand("workbench.action.openSettings", "brain.llm.mode") : undefined));
+    }
     // The key lives in VS Code's secret storage. An ANTHROPIC_API_KEY in the environment is a fallback for api-key mode only.
     const key = (await context.secrets.get(API_KEY)) ?? (settings.mode === "api-key" ? process.env.ANTHROPIC_API_KEY : undefined);
     const adminToken = await getAdminToken();
@@ -279,6 +300,14 @@ export async function activate(context: vscode.ExtensionContext) {
     await client.start();
   };
   context.subscriptions.push(
+    // Sign in to Copilot after start-up and "auto" switches to it. Only restart when the answer actually changed.
+    vscode.lm.onDidChangeChatModels(async () => {
+      if (llmSettings().mode !== "auto") return;
+      const want = (await resolveSettings()).settings.mode;
+      if (want !== client?.current?.llm.mode && !(want === "agent" && client?.current?.llm.mode === undefined)) {
+        await restart().catch((err) => out.appendLine(`restart failed: ${(err as Error).message}`));
+      }
+    }),
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration("brain.llm") || e.affectsConfiguration("brain.server.transport")) void restart().catch((err) => out.appendLine(`restart failed: ${(err as Error).message}`));
     }),

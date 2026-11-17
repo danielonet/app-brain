@@ -21,7 +21,7 @@ export async function sampleWithEditorModel(params: SamplingParams, signal: Abor
   if (!model) {
     throw new Error(
       all.length === 0
-        ? "No language model is available in the editor. Sign in to GitHub Copilot, or choose another LLM mode."
+        ? "No VS Code language model is available. Sign in to a provider such as GitHub Copilot, or set “brain.llm.mode” to “local” in Settings to use a model on your machine."
         : `No editor model matches “${hint}”. Available: ${all.map((m) => m.id).join(", ")}.`,
     );
   }

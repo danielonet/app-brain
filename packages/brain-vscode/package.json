@@ -104,20 +104,21 @@
         },
         "brain.llm.mode": {
           "type": "string",
-          "enum": ["agent", "vscode-lm", "api-key", "local"],
-          "default": "agent",
+          "enum": ["auto", "agent", "vscode-lm", "api-key", "local"],
+          "default": "auto",
           "enumDescriptions": [
-            "The server writes nothing. Agents (Claude Code, Copilot, Cursor) write docs through save_summary. No key and no cost here.",
-            "The server asks this editor's language model (for example GitHub Copilot) to write docs. VS Code asks for your consent. Token counts are estimates.",
+            "Detects your setup. Uses this editor's language model (for example GitHub Copilot) if there is one, otherwise the agent connected over MCP (Claude Code, Cursor, Copilot). Nothing to configure. Never uses a local model or an API key unless you choose them.",
+            "Connected MCP agents (Claude Code, Copilot, Cursor) write docs through save_summary. No key and no cost here.",
+            "Automatically uses the first language model available through VS Code (for example GitHub Copilot). VS Code asks for your consent. Token counts are estimates.",
             "The server calls the Claude API with your key. Exact token counts and costs. Your source code is sent to Anthropic.",
-            "The server calls a model running on your machine (Ollama, llama.cpp, LM Studio). Nothing leaves your computer."
+            "The server calls an OpenAI-compatible model URL (Ollama, llama.cpp, LM Studio). Source stays on this machine only if the URL is local."
           ],
-          "markdownDescription": "Who writes documentation when you run **Brain: Generate Docs**. Every result is a draft that you review."
+          "markdownDescription": "Who writes documentation when you run **Brain: Generate Docs**. By default (**auto**), App Brain detects your editor's language model or connected agent (Claude Code, Cursor, Copilot). Choose **local** here to use a model on your own machine. Every result is a draft that you review."
         },
         "brain.llm.model": {
           "type": "string",
           "default": "",
-          "markdownDescription": "Model id. **api-key**: defaults to `claude-opus-5-5`; a smaller model costs much less per doc. **local**: required, for example `llama3.1`. **vscode-lm**: optional model family to prefer. Set its price under *Model prices and budget* to see dollars."
+          "markdownDescription": "Model id. **api-key**: defaults to `claude-opus-5-5`; a smaller model costs much less per doc. **local**: required, for example `llama3.1`. **vscode-lm**: optional model family to prefer; leave empty to automatically use the first available VS Code language model. Set its price under *Model prices and budget* to see dollars."
         },
         "brain.llm.local.preset": {
           "type": "string",
