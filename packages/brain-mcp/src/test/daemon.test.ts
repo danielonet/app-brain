@@ -13,6 +13,7 @@ import { bearerOk, isAllowedHost, isLoopback } from "../daemon";
 import { anthropicOk, docFor, startFakeLlm } from "./fakeLlm";
 import { ADMIN, INIT_BODY, JSON_HEADERS, httpClient, raw, setup, startDaemonProc, status, waitFor } from "./daemonHelpers";
 import { tool } from "./helpers";
+import { cleanDir } from "./cleanDir";
 
 const linux = process.platform === "linux";
 
@@ -64,7 +65,7 @@ describe("where the runtime files live, and who may read them", () => {
       const link = path.join(base, "link");
       symlinkSync(target, link);
       assert.throws(() => ensureRuntimeDir(link), /not a plain directory/);
-    } finally { rmSync(base, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 }); }
+    } finally { cleanDir(base); }
   });
   it("writes server.json privately and atomically, and rejects a malformed one", async () => {
     const dir = ensureRuntimeDir(path.join(os.tmpdir(), `brain-rt2-${process.pid}-${Date.now()}`));
@@ -79,7 +80,7 @@ describe("where the runtime files live, and who may read them", () => {
       writeFileSync(path.join(dir, DAEMON_INFO_FILE), JSON.stringify({ ...info, agentToken: "short" }));
       assert.equal(await readDaemonInfo(dir), null, "a token that short is not accepted");
       assert.equal(DaemonInfoSchema.safeParse({ ...info, port: 0 }).success, false);
-    } finally { rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 }); }
+    } finally { cleanDir(dir); }
   });
   it("tells a live pid from a dead one, and never calls a dead daemon healthy", async () => {
     assert.equal(pidAlive(process.pid), true);

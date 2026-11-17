@@ -12,6 +12,7 @@ import { BrainClient, TransportSpec } from "../client";
 import { EnsureOptions, ensureDaemon, stopDaemon } from "../daemonManager";
 import { serverLine } from "../format";
 import { daemonLlm } from "../llmEnv";
+import { cleanDir } from "./cleanDir";
 
 const SERVER = require.resolve("@app-brain/brain-mcp/out/cli.js");
 const ADMIN = "adm-ext-0123456789abcdef0123456789abcdef";
@@ -44,8 +45,8 @@ afterEach(async () => {
     const info = await readDaemonInfo(runtimeDir(s.ws, s.env));
     if (info) s.pids.add(info.pid);
     for (const pid of s.pids) { try { process.kill(pid, "SIGKILL"); } catch { /* gone */ } }
-    rmSync(s.ws, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
-    rmSync(s.runtime, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
+    cleanDir(s.ws);
+    cleanDir(s.runtime);
   }
 });
 

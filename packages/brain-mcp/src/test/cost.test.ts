@@ -7,6 +7,7 @@ import { AdminTools, AgentTools, CostSummarySchema, Resources, defaultConfig } f
 import { csvCell, mdCell, summarize, toCsv, toMarkdown } from "../cost";
 import type { LlmCallRow } from "../store";
 import { connect, fixture, readJson, ready, tool } from "./helpers";
+import { cleanDir } from "./cleanDir";
 
 let nextId = 1;
 const row = (o: Partial<LlmCallRow> = {}): LlmCallRow => ({
@@ -163,7 +164,7 @@ describe("cost over MCP", () => {
   });
   after(async () => {
     await admin.close();
-    rmSync(ws, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
+    cleanDir(ws);
   });
 
   it("starts empty, and the status carries a running total", async () => {

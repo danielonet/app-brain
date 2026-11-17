@@ -8,6 +8,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { AdminTools, ENV_ADMIN_TOKEN, OKF_VERSION, PROTOCOL_VERSION, Resources } from "@app-brain/brain-protocol";
 import { globToRegExp, isSecretFile } from "../scan.js";
+import { cleanDir } from "./cleanDir";
 
 const TOKEN = "test-token-123";
 const CLI = path.resolve(__dirname, "..", "cli.js");
@@ -62,7 +63,7 @@ describe("scan helpers", () => {
 describe("brain-mcp over stdio", () => {
   let ws: string;
   before(() => { ws = fixture(); });
-  after(() => rmSync(ws, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 }));
+  after(() => cleanDir(ws));
 
   it("serves status and config to any client, without admin", async () => {
     const c = await connect(ws, undefined);

@@ -6,6 +6,7 @@ import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { AdminTools, AgentTools, UsageSummary, Resources } from "@app-brain/brain-protocol";
 import { trustTier } from "../okf/knowledge";
 import { FILES, connect, fixture, readJson, ready, tool } from "./helpers";
+import { cleanDir } from "./cleanDir";
 
 const CYCLE = {
   "src/a/x.ts": `import { y } from "../b/y";\nexport function x() { return y; }\n`,
@@ -38,7 +39,7 @@ describe("dependency graph and overview", () => {
   });
   after(async () => {
     await c.close();
-    rmSync(ws, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
+    cleanDir(ws);
   });
 
   it("module level: directories as nodes, aggregated edges, circular dependencies flagged", async () => {
