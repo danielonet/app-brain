@@ -2,7 +2,7 @@
 
 Companion to [PLAN.md](PLAN.md). That plan describes the whole system. This one narrows the scope and moves the boundary: **the local MCP server does all the work, and the VS Code extension is a front end for configuring it and seeing what it is doing.**
 
-Status: design draft. Nothing is built yet.
+Status: **built through Phase 2 (and some of Phase 3).** The sections below are the design as it was written; where the build differs from it, §13 says so, and it also lists what is built, what is not, and what comes next.
 
 ---
 
@@ -139,6 +139,8 @@ Key settings:
 | **Feedback buttons** | Thumbs up / down and a note on any summary or on a logged agent answer | `brain_admin_submit_feedback` |
 | **Output channel** | Server logs | server stderr or log file |
 
+*Status of this table:* built are the status bar item, the Review Queue (a tree of pending drafts: open, approve, reject, and approve or reject many at once), the Dependency Graph, Cost & Models, Agent Activity (a view and a status bar flash) and the output channel. Not built: the Brain tree view, the coverage dashboard, the side-by-side diff, editing and regenerating inside the queue, the stale-doc CodeLens, hover, and feedback buttons. Coverage and staleness are available as data (`brain://coverage`) and show in the status bar and the graph.
+
 **Feedback loop.** The server records each piece of feedback against the symbol or answer it refers to. It uses it in three ways: rejected summaries are regenerated with the human's note as extra context; summaries the human edited are marked `reviewed` and become examples for later generation; and "wrong result" feedback on a search is added to the retrieval benchmark set (PLAN.md §8).
 
 ### 4.3 Cost calculator and LLM report
@@ -256,7 +258,7 @@ All output lives under **one root folder at the workspace root: `.brain/`**. It 
 
 - **A concept is one Markdown file.** Its concept ID is its path inside `knowledge/` without `.md` (e.g. `files/src/auth/session.ts`). `index.md` and `log.md` are reserved names, so no concept uses them for content. A module's concept is therefore `modules/<path>.md` (e.g. `modules/src/auth.md`), and each directory's own `index.md` is the generated listing.
 - **Only `type` is required**, and the brain always sets `title` and `description` too (the index generator uses `description`). Types used: `Brain Architecture`, `Brain Module`, `Brain File`, `Brain Decision`, `Brain Convention`, `Brain Gotcha`, `Brain Note`. Types are free strings in OKF, so other tools simply treat them as generic concepts.
-- **Links are standard Markdown links, bundle-absolute**, starting with `/`: `[session store](/files/src/auth/session.ts.md)`. Absolute links stay valid when a file moves within the bundle. A symbol inside a file is addressed by heading anchor: `/files/src/auth/session.ts.md#sessionstoreget`. Symbols are headings in their file's concept, not files of their own.
+- **Links are standard Markdown links, relative to the file that holds them**: `[session store](../auth/session.ts.md)`. The first plan used bundle-absolute links (`/files/src/auth/session.ts.md`), which OKF recommends, but an editor or a Markdown preview takes a leading slash to mean the workspace root, so those links did not open from VS Code. OKF §6.1 allows relative links as well, so the server writes relative ones (percent-encoded where a name has spaces or brackets). Front matter values such as `depends_on` are data, not links, and stay bundle-absolute. A symbol inside a file is addressed by heading anchor: `../auth/session.ts.md#sessionstoreget`. Symbols are headings in their file's concept, not files of their own.
 - **Broken links are allowed**, as OKF says (they can stand for knowledge not yet written). The extension shows them as information, not errors.
 - **Unknown keys are preserved**, so humans can add front matter and the server must not drop it on rewrite.
 - **Provenance (`sources`).** Each generated concept lists the code it was derived from, with an `id` so the body can cite it with a footnote.
@@ -309,19 +311,19 @@ brain:                                  # everything brain-specific lives under 
 
 # Summary
 
-Creates and validates user sessions, backed by [the connection pool](/files/src/db/pool.ts.md)
-and signed with [token helpers](/files/src/crypto/token.ts.md).[^code]
+Creates and validates user sessions, backed by [the connection pool](../db/pool.ts.md)
+and signed with [token helpers](../crypto/token.ts.md).[^code]
 
 # SessionStore.get
 
 Looks up a session by id and rejects expired ones. Why sessions are stored server-side:
-[decision 0007](/notes/decisions/0007-session-storage.md).
+[decision 0007](../../../notes/decisions/0007-session-storage.md).
 
 <!-- brain:auto:start dependencies -->
 # Dependencies
 
-- Depends on: [pool.ts](/files/src/db/pool.ts.md), [token.ts](/files/src/crypto/token.ts.md)
-- Used by: [login handler](/files/src/http/login.ts.md)
+- Depends on: [pool.ts](../db/pool.ts.md), [token.ts](../crypto/token.ts.md)
+- Used by: [login handler](../http/login.ts.md)
 <!-- brain:auto:end -->
 
 [^code]: src/auth/session.ts
@@ -412,13 +414,16 @@ The graph is the point of choosing OKF, so its construction is explicit.
 
 ```
 packages/
-  brain-protocol/   # shared TypeScript types + JSON schemas for admin tools,
-                    # resources, notifications, config (single source of truth)
-  brain-core/       # parsers, store, ranking, doc generator   (server side)
-  brain-mcp/        # MCP server: agent tools + admin tools, stdio and HTTP
-  brain-vscode/     # extension: MCP client, views, webviews, commands
-  brain-cli/        # CI / terminal entry point, reuses brain-core
+  brain-protocol/   # shared TypeScript types + zod schemas for admin tools, resources, config,
+                    # the daemon's server.json and the provider-usage report (single source of truth)
+  brain-mcp/        # the server, with the core in it: tree-sitter parsing, SQLite store, OKF bundle,
+                    # doc generation, cost, the shared HTTP daemon and the stdio proxy; entry point cli.js
+  brain-vscode/     # the extension: MCP client, views, webviews, commands, provider-usage readers
+scripts/            # build-and-install.sh (package and install the .vsix), screenshots.js
+.github/workflows/  # ci.yml (tests on Linux, macOS, Windows), publish.yml (Marketplace)
 ```
+
+(The first plan also had a separate `brain-core` library and a `brain-cli` package. The core stayed inside `brain-mcp`, since nothing else uses it yet, and the CLI is `brain-mcp`'s own entry point. Splitting them out is only worth doing when a second consumer exists.)
 
 `brain-protocol` is what keeps the two halves in step: both import the same types, and the extension's settings form is generated from the server's schema. TypeScript throughout, as PLAN.md recommends, so the VS Code extension and the server share one language.
 
@@ -446,7 +451,7 @@ Moving the file watcher and semantic analysis out of the extension has costs wor
   2. The server **starts its own language servers** (what Serena does). More work, but fully independent of VS Code.
   3. **Extension as an optional edge feeder:** if the user opts in, the extension calls the language providers and pushes resolved edges to the server through `brain_admin_submit_edges`. This keeps VS Code's zero-setup benefit but breaks the rule that the extension has no logic, so it is off by default and clearly separate.
 
-  **Recommendation:** MVP uses tree-sitter only (name-matched edges, flagged low confidence). Phase 2 adds option 3 as an opt-in, Phase 3 adds option 1.
+  **Recommendation:** MVP uses tree-sitter only (name-matched edges, flagged low confidence). Phase 2 adds option 3 as an opt-in, Phase 3 adds option 1. *Status: only the tree-sitter step is built; neither option is, see §13.*
 - **File watching is duplicated** if the server and VS Code both watch. Acceptable: only the server does it, and the extension just displays the result.
 - **The extension is fully replaceable.** A different front end (a web UI, a JetBrains plugin) can be built against the same admin tools without changing the server. This is the main benefit of the split.
 
@@ -454,17 +459,19 @@ Moving the file watcher and semantic analysis out of the extension has costs wor
 
 ## 10. Roadmap
 
-- **Phase 0 — protocol spike (~1 week):** `brain-protocol` types, a minimal `brain-mcp` with `brain://status` and `brain_admin_get_config`, and an extension that spawns it over stdio and shows the status bar item. Proves the client/server split end to end.
-- **Phase 1 — MVP:**
-  - Server: tree-sitter index for two languages, `search_code`, `get_symbol`, `.brain/` layout creation, status and coverage resources, progress notifications.
-  - Extension: activation and lifecycle, Settings webview from the server schema, Brain tree view, status bar, Output Folder command, Copy MCP Config, `mcpServerDefinitionProviders` registration.
-  - Usage level 1 (§4.4): log every MCP call by client and session, live status bar indicator, basic Agent Activity list. Cheap and gives the "did the agent call the brain" answer early.
-  - `llm_call` table and the `brain.llm` fields in concept front matter.
-  - OKF bundle: `knowledge/` layout, `index.md` (with `okf_version`), `log.md`, concept front matter, `brain validate` for OKF conformance.
-  - Graph: Markdown links and `brain.depends_on` from tree-sitter edges, `get_neighbors` and `impact_of_change` on it.
-- **Phase 2 — review, feedback and cost:** drafts → `knowledge/` promotion (sets `status`, `verified`), Review queue, CodeLens for stale docs, feedback storage and use in regeneration, coverage dashboard, Dependency Graph view and graph-health checks (§4.2), HTTP daemon mode with token. Cost calculator: price table, pre-run estimate, budget cap, Cost & Models view, report export.
-- **Phase 3 — depth:** usage levels 2 and 3 (follow-up correlation, client hooks, per-session summary, estimated saving), Check Agent Connection, optional language-provider edge feeder, `vscode-lm` mode, docs site export, JSON-LD graph export, SCIP import.
-- **Phase 4:** team features: shared config conventions, multi-root workspaces, CI integration.
+Marks: **done**, **partly**, **not yet**. §13 has the detail.
+
+- **Phase 0 — protocol spike: done.** `brain-protocol` types, a minimal `brain-mcp`, an extension that spawns it and shows the status bar item.
+- **Phase 1 — MVP: done, except the items marked.**
+  - Server: tree-sitter index for TypeScript, TSX, JavaScript and Python (done), `search_code`, `get_symbol` (done), `.brain/` layout creation, status and coverage resources, progress notifications (done).
+  - Extension: activation and lifecycle, Settings webview from the server schema, status bar, Output Folder command, Copy MCP Config, `mcpServerDefinitionProviders` registration (done). **Brain tree view (modules, files, symbols): not yet.**
+  - Usage level 1 (§4.4): every MCP call logged by client, live status bar flash, Agent Activity list (done).
+  - `llm_call` table and the `brain.llm` fields in concept front matter (done).
+  - OKF bundle: `knowledge/` layout, `index.md` with `okf_version`, `log.md`, front matter, validation (done).
+  - Graph: Markdown links and `brain.depends_on` from tree-sitter edges, `get_neighbors` and `impact_of_change` (done). **`.brain/` notes (`add_note`, `read_notes`) and an LSP bridge: not yet.**
+- **Phase 2 — review, feedback and cost: done, except the items marked.** Drafts to `knowledge/` promotion with `status` and `verified`, the Review Queue, feedback storage used in regeneration, the Dependency Graph view and graph-health checks, the HTTP daemon with a token, and the cost calculator (price table, estimate, budget cap, Cost & Models view, report export) are done. **CodeLens for stale docs, the coverage dashboard, and diff and edit inside the Review Queue: not yet.** Added beyond the plan: server-side doc generation, approving many drafts at once, and provider usage (§13).
+- **Phase 3 — depth: partly.** Done: `vscode-lm` mode (and `api-key`, and `local` models), JSON-LD graph export. Not yet: usage levels 2 and 3, Check Agent Connection, the language-provider edge feeder, SCIP import, docs site export.
+- **Phase 4:** team features (shared config conventions, multi-root workspaces, CI integration): not yet. CI for this repository exists (§11), which is a different thing.
 
 ---
 
@@ -475,23 +482,77 @@ Moving the file watcher and semantic analysis out of the extension has costs wor
 - **Server:** unit and integration tests with fixture repos, no VS Code needed. This is where most tests live, because most logic lives here.
 - **Extension:** `@vscode/test-electron` smoke tests (activate, connect to a stub MCP server, render the tree), plus webview tests with the server stubbed.
 - **End-to-end:** a script that starts the daemon on a fixture repo, drives it through the extension's commands, and checks the files created under `.brain/`.
-- **Does it help agents:** the task and retrieval benchmarks from PLAN.md §8, run against the server alone.
+- **Does it help agents:** the task and retrieval benchmarks from PLAN.md §8, run against the server alone. *Not built yet.*
+- **What exists:** about 390 tests (server and extension, no VS Code needed) run on Linux, macOS and Windows in CI on every pull request. The webviews are tested in a real Chromium against data from the real server. `@vscode/test-electron` smoke tests are not set up: nothing here has been run inside a real VS Code window by a test.
 
 ---
 
-## 12. Open decisions
+## 12. Decisions
 
-- **Default transport:** HTTP daemon (recommended) vs per-client stdio. Check which target clients support HTTP MCP before fixing it.
-- **Admin-tool separation:** same server with a token-gated tool set (recommended) vs a second, extension-only endpoint.
-- **Drafts location:** physical `drafts/` folder (recommended) vs OKF `status: draft` in the same `knowledge/` folder. The folder keeps unreviewed text out of PRs but duplicates the layout.
-- **OKF maturity:** v0.2 is a Google Cloud draft and the spec has already had a breaking change (v0.1 → v0.2). Pin the version, keep brain data under the `brain:` key, and re-check the official spec (and its licence, which secondary sources report inconsistently) before Phase 1.
+**Decided during the build**
+
+- **Default transport:** the HTTP daemon, one per workspace on loopback; a stdio config quietly becomes a proxy to it; `--no-proxy` opts out.
+- **Admin-tool separation:** the same server, with `brain_admin_*` tools gated by an admin token that only the extension has (passed on stdin).
+- **Drafts location:** a physical `.brain/drafts/` folder, so unreviewed text stays out of the bundle.
+- **OKF maturity:** v0.2 pinned; brain data under the `brain:` key; links relative (§5.1).
+- **Native SQLite packaging:** neither `better-sqlite3` nor an extension: the server uses Node's built-in `node:sqlite` with FTS5, which needs Node 22.16 or newer (22.13 to 22.15 ship it without FTS5; the server says so when it starts).
+- **Server distribution:** bundled in the `.vsix`, with its production dependencies (about 9 MB).
+- **First languages:** TypeScript (with TSX and JavaScript) and Python.
+- **Cost accuracy in `agent` mode:** estimates are accepted and always labelled; agents may report real counts.
+- **Price table:** edited by the user, no shipped defaults; a model without a price makes totals a lower bound, and the report says so.
+- **LLM path:** all four exist (`agent`, `vscode-lm`, `api-key`, `local`) plus `auto`, which never picks `local` or an API key on its own.
+- **Resource URIs for code:** a path relative to the concept file.
+
+**Still open**
+
 - **Typed edges in front matter:** OKF links are untyped, so `brain.depends_on` / `part_of` are a brain extension. Decide whether to propose typed relations upstream or keep them private.
-- **Resource URIs for code:** permalink URL when a git remote exists (recommended, survives moves) vs a path relative to the concept file.
 - **Commit generated docs by default?** Recommended: commit only reviewed docs. Needs agreement from the team.
-- **Server distribution:** bundled with the VSIX (works offline, larger) vs installed on first run (smaller, needs network).
-- **Native SQLite packaging:** the server is a separate Node process, so native `better-sqlite3` is usable there, which removes the Electron ABI problem from PLAN.md §3.
-- **First two languages** for Phase 1.
-- **Cost accuracy in `agent` mode:** accept estimated numbers (recommended, always labelled), or require agents to report their real usage in `save_summary` (more accurate, but most clients cannot supply it).
-- **Price table maintenance:** ship defaults and let users edit (recommended), or fetch from a pricing source on demand. Fetching adds a network dependency and a trust question.
 - **Usage hooks:** which clients to support in Phase 3 (Claude Code first, since it has hooks), and whether hook installation should be one click or a copy-paste snippet.
 - **Usage log retention and sharing:** local only (recommended) vs an opt-in team report. A team report would expose queries, so it needs explicit consent.
+
+---
+
+## 13. Where we are, and what comes next
+
+### 13.1 What is built
+
+| Area | State |
+|---|---|
+| **Index** | tree-sitter (WASM, `@vscode/tree-sitter-wasm`) for TypeScript, TSX, JavaScript, Python: symbols, signatures, docstrings, import edges. SQLite with FTS5. Incremental by mtime and content hash, with a file watcher. Secret files and everything in `.gitignore` are never indexed. |
+| **Agent tools** (read-only) | `search_code`, `get_symbol`, `get_neighbors`, `impact_of_change`, `get_graph`, `get_overview`, `list_undocumented`, `save_summary`. Every call is logged by client, with tokens returned and latency. |
+| **Knowledge base** | OKF v0.2 bundle under `.brain/knowledge/`. Agents write drafts to `.brain/drafts/`; a person approves or rejects them; approval sets `status: stable` and `verified`. `index.md` and `log.md` are generated, the Dependencies block is machine-owned, staleness is computed from a content hash, and `validate` checks conformance, broken links, orphans and cycles. Links are relative, so they open from an editor. |
+| **Doc generation** | Written by the connected agent, or by the server: `api-key` (the Anthropic SDK), `vscode-lm` (the editor's model over MCP sampling), or `local` (Ollama, LM Studio, llama.cpp, any OpenAI-compatible server). Bottom-up, with an estimate before anything is spent, a budget cap, cancel, and reviewer notes fed into the next attempt. All output is a draft. |
+| **Review** | The Review Queue; approve or reject several at once (select them, or **Approve Many Drafts**); documents approved in bulk are marked `approved_in_bulk`. Server-side, 1,000 approvals take about 3 seconds. |
+| **Cost** | `llm_call` table, user-edited price table, exact versus estimated token counts, budget meter, Cost & Models view, CSV and Markdown export. |
+| **Provider usage** | In Cost & Models, apart from the brain's own cost: Claude Code's local logs for this workspace (on by default; usage numbers only) and the Anthropic organisation through the Usage and Cost Admin API (off by default; needs an Admin API key). |
+| **Dependency graph** | Modules or files, circular dependencies marked, each node coloured by documentation status and ringed by who reviewed it, with a side panel and keyboard access. JSON-LD export. |
+| **Shared server** | One HTTP daemon per workspace on loopback with a bearer token; stdio configs become proxies to it; admin token and keys travel on stdin, never in a file, the environment or the command line; strict `Host`, `Origin` and peer checks; prompt-injection fencing and secret redaction for anything sent to a model. |
+| **Extension** | Status bar, Review Queue, Settings form generated from the server's schema, Dependency Graph, Cost & Models, Agent Activity, symbol search, validation, exports, MCP config for Claude Code, registration with Copilot's agent mode, key commands, LLM connection test, local model picker. The icon is a single-colour SVG so VS Code can recolour it. |
+| **Engineering** | GitHub Actions: tests on Linux, macOS and Windows for every pull request; merging a version change publishes to the Marketplace. Node 22.16 or newer. |
+
+### 13.2 Not built yet
+
+- **Notes and prompts:** `add_note`, `read_notes`, and the `/onboard` and `/document-module` prompts.
+- **Better edges:** an LSP bridge, SCIP import, or the optional edge feeder (§9). Edges are tree-sitter name matches.
+- **Search:** embeddings and combined semantic search.
+- **Extension surfaces:** the Brain tree view, CodeLens for stale docs, hover, the coverage dashboard, diff and edit inside the Review Queue, feedback buttons, Check Agent Connection.
+- **Usage levels 2 and 3** (§4.4): follow-up correlation, client hooks, per-session summary, estimated saving.
+- **Provider usage for Copilot and Cursor.** Copilot's local logs look like a usable source, but their format has to be seen on a machine that has them before a reader is written; Cursor's usage API is for team admins.
+- **Automatic generation after indexing** (`docs.autoGenerate` is reserved and does nothing).
+- **Outside the editor:** a CLI, the docs site export, SCIP in CI.
+- **More languages**, large-repository housekeeping, multi-root workspaces.
+- **The benchmarks** in PLAN.md §8: without them "makes agents better" is still a claim, not a measurement.
+- **Checks in real conditions:** a session inside a real VS Code window, a real Anthropic Admin key, a real Ollama, and the Windows and macOS behaviour by hand. The tests cover the logic; they have not replaced these.
+
+### 13.3 Next
+
+In this order, because each step makes the next one safer:
+
+1. **Use it for real, and fix what that shows.** Install the published extension, run it on a real repository, and walk through indexing, generating, reviewing and the cost view. Everything below is guesswork until this has happened.
+2. **The review experience.** Diff and edit in the queue, CodeLens for stale docs, filters. Bulk approval made approving fast; the risk it creates is approving without reading, so the queue should make reading easier too.
+3. **Measure whether it helps.** The task and retrieval benchmarks (PLAN.md §8) against the server alone.
+4. **Notes and prompts**, then **better edges** (SCIP or an LSP feed). The server's own graph already shows a circular dependency between `brain-mcp/src`, `generate` and `okf`; breaking it is a good first use of the tool on itself.
+5. **Provider usage for Copilot** (from its local logs, built against real files) and **Cursor** (admin API).
+6. **Semantic search** once the benchmark says search quality is the limit.
+7. **Usage levels 2 and 3, `autoGenerate`, the CLI and the site export**, then team features.
+
