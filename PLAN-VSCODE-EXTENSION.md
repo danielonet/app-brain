@@ -537,7 +537,7 @@ Marks: **done**, **partly**, **not yet**. §13 has the detail.
 - **Search:** embeddings and combined semantic search.
 - **Extension surfaces:** the Brain tree view, CodeLens for stale docs, hover, the coverage dashboard, diff and edit inside the Review Queue, feedback buttons, Check Agent Connection.
 - **Usage levels 2 and 3** (§4.4): follow-up correlation, client hooks, per-session summary, estimated saving.
-- **Provider usage for Copilot and Cursor.** Copilot's local logs look like a usable source, but their format has to be seen on a machine that has them before a reader is written; Cursor's usage API is for team admins.
+- **Provider usage for Cursor.** Its usage API is for team admins. Copilot is done: it is read from the workspace's `chatSessions/*.jsonl` (see `copilotLogs.ts`).
 - **Automatic generation after indexing** (`docs.autoGenerate` is reserved and does nothing).
 - **Outside the editor:** a CLI, the docs site export, SCIP in CI.
 - **More languages**, large-repository housekeeping, multi-root workspaces.

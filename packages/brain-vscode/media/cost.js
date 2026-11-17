@@ -242,7 +242,8 @@
     card.append(h("div", { class: "tiles" },
       tile(block.complete ? "Cost" : "Known cost", usd(t.costUsd), id + "-cost"), tile("Messages", t.messages ? String(t.messages) : "n/a", id + "-messages"),
       tile("Tokens out", compact(t.outputTokens), id + "-out"), tile("Tokens in (uncached)", compact(t.inputTokens), id + "-in"),
-      tile("Cache reads", compact(t.cacheReadTokens), id + "-read"), tile("Cache writes", compact(t.cacheWriteTokens), id + "-write")));
+      tile("Cache reads", compact(t.cacheReadTokens), id + "-read"), tile("Cache writes", compact(t.cacheWriteTokens), id + "-write"),
+      block.credits !== undefined && block.credits !== null ? tile("Copilot credits", compact(block.credits), id + "-credits") : null));
     const days = providerRows(block.byDay, (d) => d.day, (d) => shortDay(d.day));
     card.append(h("h3", { text: m.label + " by day" }), columns(days, m.fmt, m.label + " by day, " + title),
       tableView("by day, " + title, [{ head: "Day", cell: (r) => r.label }, { head: m.label, num: true, cell: (r) => m.fmt(r.value) }], days));
@@ -266,14 +267,17 @@
     const box = $("providers");
     if (usageError) { box.append(h("div", { class: "notice", role: "alert", id: "usage-error", text: usageError })); return; }
     if (!usage) { box.append(h("p", { class: "muted", id: "usage-loading", text: "Reading provider usage…" })); return; }
-    const cc = usage.claudeCode, org = usage.anthropicOrg;
+    const cc = usage.claudeCode, org = usage.anthropicOrg, cp = usage.copilot;
     box.append(providerCard("claude-code", "Claude Code in this workspace",
       `Last ${dayCount(usage.lookbackDays)}, from Claude Code's own logs on this machine` + (cc.source ? ` (${cc.source})` : "") + ". Only this repository.", cc,
+      (b) => (b.state === "off" ? h("button", { type: "button", class: "link", text: "Turn on in settings", onclick: () => api.postMessage({ type: "openUsageSettings" }) }) : null)));
+    if (cp) box.append(providerCard("copilot", "GitHub Copilot Chat in this workspace",
+      `Last ${dayCount(usage.lookbackDays)}, from Copilot Chat's own session files on this machine. Only this repository. Input is a lower bound.`, cp,
       (b) => (b.state === "off" ? h("button", { type: "button", class: "link", text: "Turn on in settings", onclick: () => api.postMessage({ type: "openUsageSettings" }) }) : null)));
     box.append(providerCard("anthropic-org", "Anthropic organisation",
       `Last ${dayCount(usage.lookbackDays)}, from Anthropic's Usage and Cost API. The whole organisation behind the key, not just this repository.`, org,
       (b) => (b.state === "off" ? h("button", { type: "button", class: "primary", text: "Set Admin key", onclick: () => api.postMessage({ type: "setAnthropicKey" }) }) : null)));
-    box.append(h("p", { class: "muted", text: "Copilot and Cursor are not shown: Copilot reports premium requests rather than tokens, and Cursor's usage API is for team admins only." }));
+    box.append(h("p", { class: "muted", text: "Cursor is not shown: its usage API is for team admins only." }));
   }
 
   /** If the cost summary could not be loaded (no server), the provider sections still stand on their own. */

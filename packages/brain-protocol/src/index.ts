@@ -460,6 +460,14 @@ export interface ClaudeCodeUsage extends ProviderUsageBlock {
   sessions: number;
 }
 
+export interface CopilotUsage extends ProviderUsageBlock {
+  /** The folder the chat sessions were read from. */
+  source: string | null;
+  sessions: number;
+  /** Copilot's own measure of what each request used, summed. It is not dollars; null when the logs carried none. */
+  credits: number | null;
+}
+
 export interface AnthropicOrgUsage extends ProviderUsageBlock {
   /** True when cost is the amount Anthropic billed; false when it is worked out from the price table. */
   costIsBilled: boolean;
@@ -469,6 +477,7 @@ export interface ProviderUsage {
   generatedAt: string;
   lookbackDays: number;
   claudeCode: ClaudeCodeUsage;
+  copilot: CopilotUsage;
   anthropicOrg: AnthropicOrgUsage;
 }
 

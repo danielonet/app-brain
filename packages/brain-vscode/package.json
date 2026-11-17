@@ -94,6 +94,11 @@
           "default": true,
           "markdownDescription": "Show Claude Code's usage in this workspace in **Cost & Models**, read from the session logs Claude Code keeps on this machine (`~/.claude/projects`, or `CLAUDE_CONFIG_DIR`). Only token counts, the model and the time are read; nothing you or Claude wrote is looked at or sent anywhere."
         },
+        "brain.usage.copilotLogs": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Show GitHub Copilot Chat's usage in this workspace in **Cost & Models**, read from the chat session files VS Code keeps on this machine. Only token counts, Copilot's credit figure, the model and the time are read; nothing you or Copilot wrote is looked at or sent anywhere."
+        },
         "brain.usage.anthropicAdmin.enabled": {
           "type": "boolean",
           "default": false,
