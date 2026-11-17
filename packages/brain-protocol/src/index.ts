@@ -46,6 +46,7 @@ export const AdminTools = {
   setConfig: "brain_admin_set_config",
   reindex: "brain_admin_reindex",
   reviewSummary: "brain_admin_review_summary",
+  reviewMany: "brain_admin_review_many",
   validate: "brain_admin_validate",
   exportGraph: "brain_admin_export_graph",
   exportCostReport: "brain_admin_export_cost_report",
@@ -295,6 +296,16 @@ export const ReviewResultSchema = z.object({
   conceptPath: z.string(),
 });
 export type ReviewResult = z.infer<typeof ReviewResultSchema>;
+
+export interface ReviewManyResult {
+  action: "approve" | "reject";
+  /** How many were done. */
+  done: number;
+  /** The targets that were done. */
+  targets: string[];
+  /** Ones that could not be, with why. The rest went ahead. */
+  failed: { target: string; error: string }[];
+}
 
 // ---------------------------------------------------------------------------
 // Dependency graph: PLAN-VSCODE-EXTENSION.md §5.2

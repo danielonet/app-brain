@@ -2,7 +2,7 @@ import { promises as fs } from "node:fs";
 import * as path from "node:path";
 import { OKF_VERSION } from "@app-brain/brain-protocol";
 import {
-  FrontMatter, GENERATED_MARKER, IndexEntry, RESERVED, addLogEntry, isGeneratedIndex, isNonEmptyString, parseConcept, renderIndex, serializeConcept,
+  FrontMatter, GENERATED_MARKER, IndexEntry, RESERVED, addLogEntry, isGeneratedIndex, isNonEmptyString, parseConcept, relativeLink, renderIndex, serializeConcept,
 } from "./format";
 import type { BrainWorkspace } from "../workspace";
 
@@ -150,12 +150,12 @@ export class Bundle {
       }
       const entries: IndexEntry[] = [];
       for (const sub of [...info.subdirs].filter((s) => (path.posix.dirname(s) === "." ? "" : path.posix.dirname(s)) === d).sort()) {
-        entries.push({ title: `${path.posix.basename(sub)}/`, link: `/${sub}/index.md`, description: "" });
+        entries.push({ title: `${path.posix.basename(sub)}/`, link: relativeLink(indexPath, `${sub}/index.md`), description: "" });
       }
       for (const c of info.concepts.sort((a, b) => a.conceptPath.localeCompare(b.conceptPath))) {
         entries.push({
           title: isNonEmptyString(c.fm.title) ? c.fm.title : c.conceptPath.replace(/\.md$/, ""),
-          link: `/${c.conceptPath}`,
+          link: relativeLink(indexPath, c.conceptPath),
           description: isNonEmptyString(c.fm.description) ? c.fm.description : "",
         });
       }

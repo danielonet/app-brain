@@ -13,6 +13,7 @@ import {
   InitResult,
   PROTOCOL_VERSION,
   PendingItem,
+  ReviewManyResult,
   ReviewResult,
   ValidationResult,
   CostSummary,
@@ -265,6 +266,10 @@ export class BrainClient {
 
   review(target: string, action: "approve" | "reject", by: string, note?: string): Promise<ReviewResult> {
     return this.call<ReviewResult>(AdminTools.reviewSummary, { target, action, by, ...(note ? { note } : {}) });
+  }
+
+  reviewMany(targets: string[], action: "approve" | "reject", by: string, note?: string): Promise<ReviewManyResult> {
+    return this.call<ReviewManyResult>(AdminTools.reviewMany, { targets, action, by, ...(note ? { note } : {}) });
   }
 
   getConfig(): Promise<Record<string, unknown>> {

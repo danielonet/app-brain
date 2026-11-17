@@ -25,6 +25,17 @@ describe("extension manifest", () => {
     assert.equal(png[25], 6, "RGBA colour type, so the rounded corners are transparent");
   });
 
+  it("lets the review queue select many drafts, and offers bulk approval from its title bar and the palette", () => {
+    const source = readFileSync(path.join(root, "src", "extension.ts"), "utf8");
+    assert.match(source, /createTreeView\("brain\.review", \{[^}]*canSelectMany: true/);
+    const title: { command: string }[] = manifest.contributes.menus["view/title"];
+    assert.ok(title.some((m) => m.command === "brain.review.approveMany"));
+    assert.ok(!manifest.contributes.menus.commandPalette.some((m: { command: string }) => m.command === "brain.review.approveMany"), "reachable from the palette");
+    // right-clicking a selection (not only the inline icons) offers approve and reject
+    const context: { command: string; group: string }[] = manifest.contributes.menus["view/item/context"];
+    for (const c of ["brain.review.approve", "brain.review.reject"]) assert.ok(context.some((m) => m.command === c && !m.group.startsWith("inline")), c + " in the right-click menu");
+  });
+
   it("registers exactly the commands it contributes", () => {
     const source = readFileSync(path.join(root, "src", "extension.ts"), "utf8");
     const registered = new Set([...source.matchAll(/registerCommand\("([^"]+)"/g)].map((m) => m[1]));
