@@ -1,7 +1,7 @@
 import { strict as assert } from "node:assert";
 import { describe, it } from "node:test";
 import type { BrainStatus } from "@app-brain/brain-protocol";
-import { activityItems, describeArgs, flashText, mcpConfigSnippet, reviewRows, statusBarText, validationReport, validationSummary } from "../format";
+import { activityItems, bulkConfirmation, bulkResultMessage, bulkScopes, describeArgs, folderGroups, isPlainDraft, flashText, mcpConfigSnippet, reviewRows, statusBarText, validationReport, validationSummary } from "../format";
 
 const base: BrainStatus = {
   state: "idle", initialised: true, workspace: "/w", outputDir: "/w/.brain", serverVersion: "0.0.0",
@@ -93,6 +93,45 @@ describe("review queue and validation", () => {
     assert.ok(b.stale);
     assert.match(b.tooltip, /code changed after this draft/);
     assert.deepEqual(reviewRows([]), []);
+  });
+  it("offers the safest bulk choice first, and leaves out drafts that deserve a look", () => {
+    const items = [item(), item({ target: "src/b.ts" }), item({ target: "src/c.ts", stale: true }), item({ target: "src/d.ts", replacesReviewed: true })];
+    assert.deepEqual(items.map(isPlainDraft), [true, true, false, false]);
+    const scopes = bulkScopes(items);
+    assert.deepEqual(scopes.map((s) => s.id), ["fresh", "folders", "pick", "all"]);
+    assert.deepEqual(scopes[0].items.map((i) => i.target), ["src/a.ts", "src/b.ts"]);
+    assert.match(scopes[0].label, /\(2\)/);
+    assert.match(scopes[0].description, /leaves out 2 drafts/);
+    assert.equal(scopes[3].items.length, 4);
+    assert.match(scopes[3].description, /2 drafts whose code changed or that replace a reviewed doc/);
+  });
+  it("does not offer 'everything' as a second option when nothing is set apart", () => {
+    assert.deepEqual(bulkScopes([item(), item({ target: "src/b.ts" })]).map((s) => s.id), ["fresh", "folders", "pick"]);
+    assert.deepEqual(bulkScopes([]).map((s) => s.id), ["folders", "pick"]);
+  });
+  it("groups drafts by the folder of their code, largest first, with a module's doc in its own folder", () => {
+    const groups = folderGroups([
+      item({ target: "src/auth/a.ts" }), item({ target: "src/auth/b.ts" }), item({ target: "src/db/p.ts" }),
+      item({ target: "src/auth", kind: "module" }), item({ target: "top.ts" }), item({ target: ".", kind: "module" }),
+    ]);
+    assert.deepEqual(groups.map((g) => [g.folder, g.items.length]), [["src/auth", 3], [".", 2], ["src/db", 1]]);
+  });
+  it("says what approving many means, and what is different about some of them", () => {
+    const plain = bulkConfirmation([item(), item({ target: "src/b.ts" })], "jdoe");
+    assert.equal(plain.message, "Approve 2 drafts?");
+    assert.equal(plain.button, "Approve 2");
+    assert.match(plain.detail, /reviewed by jdoe/);
+    assert.match(plain.detail, /approved_in_bulk/);
+    assert.doesNotMatch(plain.detail, /changed after|replace a document/);
+    const mixed = bulkConfirmation([item({ stale: true }), item({ target: "b", replacesReviewed: true })], "jdoe");
+    assert.match(mixed.detail, /1 draft describe code that changed/);
+    assert.match(mixed.detail, /1 draft replace a document someone already reviewed/);
+    assert.equal(bulkConfirmation([item()], "j").message, "Approve 1 draft?");
+  });
+  it("reports a bulk result in a line, and points at the output when some failed", () => {
+    assert.equal(bulkResultMessage("approve", 214, []), "Approved 214 drafts.");
+    assert.equal(bulkResultMessage("reject", 1, []), "Rejected 1 draft.");
+    assert.match(bulkResultMessage("approve", 10, [{ target: "a", error: "x" }]), /Approved 10; 1 could not be approved \(see the Brain output\)/);
   });
   it("reports errors first", () => {
     const r = { conformant: false, concepts: 3, issues: [

@@ -208,6 +208,7 @@ export function createBrainCore(opts: BrainServerOptions) {
       const result = await indexer.run();
       setState({ state: "idle", message: null });
       notify(Resources.status);
+      void knowledge.migrateDependencyLinks().catch(() => {}); // once per run: old absolute links become relative ones
       return result;
     } catch (e) {
       log(`index failed: ${(e as Error).stack ?? e}`);
@@ -513,6 +514,26 @@ export function createBrainCore(opts: BrainServerOptions) {
     guarded(async (a: { target: string; action: "approve" | "reject"; by: string; note?: string; body?: string }) => {
       try {
         return json(await knowledge.review(a));
+      } catch (e) {
+        return fail((e as Error).message);
+      }
+    }),
+  );
+
+  server.registerTool(
+    AdminTools.reviewMany,
+    {
+      description: "Approve or reject many generated drafts at once. Each is checked and written on its own and a failure does not stop the rest; indexes and the log are updated once. Approved documents are marked as approved in bulk.",
+      inputSchema: {
+        targets: z.array(z.string().min(1)).min(1).max(2000),
+        action: z.enum(["approve", "reject"]),
+        by: z.string().min(1).describe("Who is deciding; recorded as human:<by>."),
+        note: z.string().optional(),
+      },
+    },
+    guarded(async (a: { targets: string[]; action: "approve" | "reject"; by: string; note?: string }) => {
+      try {
+        return json(await knowledge.reviewMany(a));
       } catch (e) {
         return fail((e as Error).message);
       }

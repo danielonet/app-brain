@@ -59,6 +59,20 @@ export function getPath(obj: unknown, dotted: string): unknown {
 /** Bundle-absolute link to a concept file: `files/src/a.ts.md` -> `/files/src/a.ts.md`. */
 export const linkTo = (conceptPath: string) => "/" + conceptPath;
 
+/** Percent-encodes each path segment, so spaces, parentheses and the like cannot break a Markdown link. Keeps the slashes. */
+export const encodeLinkPath = (p: string) =>
+  p.split("/").map((seg) => encodeURIComponent(seg).replace(/[()]/g, (c) => "%" + c.charCodeAt(0).toString(16).toUpperCase())).join("/");
+
+/**
+ * A relative Markdown link from one file to another, both given as bundle paths. OKF allows bundle-absolute (`/files/x.md`)
+ * and relative links alike, but only a relative one opens from an editor or a Markdown preview, which have no idea where
+ * the bundle root is and take a leading slash to mean the workspace (or disk) root.
+ */
+export function relativeLink(fromFile: string, toFile: string): string {
+  const rel = path.posix.relative(path.posix.dirname(fromFile), toFile);
+  return encodeLinkPath(rel.startsWith(".") ? rel : "./" + rel);
+}
+
 const FENCE = /^(```|~~~)/;
 const LINK = /\[[^\]]*\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g;
 
@@ -76,6 +90,7 @@ export function bundleLinks(body: string, fromConceptPath: string): string[] {
       let target = m[1];
       if (/^[a-z][a-z0-9+.-]*:/i.test(target) || target.startsWith("#")) continue;
       target = target.split("#")[0].split("?")[0];
+      try { target = decodeURIComponent(target); } catch { /* not encoded: use as written */ }
       if (!target.endsWith(".md")) continue;
       const resolved = target.startsWith("/") ? target.slice(1) : path.posix.join(path.posix.dirname(fromConceptPath), target);
       out.push(path.posix.normalize(resolved));
@@ -97,14 +112,25 @@ export function stripAutoMarkers(text: string): string {
   return text.replace(/<!--\s*brain:auto:(start|end)[^>]*-->/g, "");
 }
 
-export function dependencyBlock(dependsOn: string[], usedBy: string[]): string {
-  const item = (conceptPath: string) => `[${conceptPath.replace(/\.md$/, "").replace(/^(files|modules)\//, "")}](${linkTo(conceptPath)})`;
+/** Where the document holding the block lives: in the bundle itself, or in drafts/ beside it (a draft links into knowledge/). */
+export interface BlockLocation {
+  conceptPath: string;
+  in: "knowledge" | "drafts";
+}
+
+export function dependencyBlock(dependsOn: string[], usedBy: string[], from: BlockLocation): string {
+  const fromFile = from.in === "drafts" ? `drafts/${from.conceptPath}` : from.conceptPath;
+  const item = (conceptPath: string) =>
+    `[${conceptPath.replace(/\.md$/, "").replace(/^(files|modules)\//, "")}](${relativeLink(fromFile, from.in === "drafts" ? `knowledge/${conceptPath}` : conceptPath)})`;
   const lines = [AUTO_START, "# Dependencies", ""];
   lines.push(dependsOn.length ? `- Depends on: ${dependsOn.map(item).join(", ")}` : "- Depends on: nothing in this repository");
   lines.push(usedBy.length ? `- Used by: ${usedBy.map(item).join(", ")}` : "- Used by: nothing in this repository");
   lines.push(AUTO_END);
   return lines.join("\n") + "\n";
 }
+
+/** True when the managed block still has the old bundle-absolute links (`](/files/...)`), which do not open from an editor. */
+export const hasLegacyLinks = (body: string) => /<!-- brain:auto:start dependencies -->[\s\S]*?\]\(\/[^)]*\)[\s\S]*?<!-- brain:auto:end -->/.test(body);
 
 /** Replaces the managed block, or appends it when the body has none. */
 export function withDependencyBlock(body: string, block: string): string {
@@ -117,7 +143,7 @@ export function withDependencyBlock(body: string, block: string): string {
 
 export interface IndexEntry {
   title: string;
-  link: string; // bundle-absolute
+  link: string; // relative to the index file, so it opens from an editor
   description: string;
 }
 

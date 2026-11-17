@@ -137,6 +137,72 @@ export function reviewRows(items: PendingItem[]): ReviewRow[] {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Approving many drafts at once
+// ---------------------------------------------------------------------------
+
+export type BulkScopeId = "fresh" | "all" | "folders" | "pick";
+export interface BulkScope {
+  id: BulkScopeId;
+  label: string;
+  description: string;
+  /** What this choice approves; for "folders" and "pick" the person narrows it down next. */
+  items: PendingItem[];
+}
+
+const plural = (n: number, one: string, many = one + "s") => `${n} ${n === 1 ? one : many}`;
+/** A draft that adds a new doc for code that has not changed since: the safe kind to approve together. */
+export const isPlainDraft = (i: PendingItem) => !i.stale && !i.replacesReviewed;
+
+/**
+ * The ways to approve a lot of drafts, safest first. The first one leaves out drafts whose code changed since they were
+ * written and drafts that would replace a doc someone already reviewed, because those are the ones worth a look.
+ */
+export function bulkScopes(items: PendingItem[]): BulkScope[] {
+  const plain = items.filter(isPlainDraft);
+  const out: BulkScope[] = [];
+  if (plain.length) out.push({ id: "fresh", label: `All new drafts for unchanged code (${plain.length})`, description: items.length === plain.length ? "" : `leaves out ${plural(items.length - plain.length, "draft")} to look at`, items: plain });
+  out.push({ id: "folders", label: "Choose folders…", description: "approve everything in the folders you tick", items });
+  out.push({ id: "pick", label: "Choose drafts…", description: "tick them one by one", items });
+  if (items.length !== plain.length) out.push({ id: "all", label: `Everything (${items.length})`, description: `including ${plural(items.length - plain.length, "draft")} whose code changed or that replace a reviewed doc`, items });
+  return out;
+}
+
+export interface FolderGroup {
+  folder: string;
+  items: PendingItem[];
+}
+
+/** Drafts grouped by the folder of the code they describe, largest first. A module's own doc sits in its own folder's group. */
+export function folderGroups(items: PendingItem[]): FolderGroup[] {
+  const groups = new Map<string, PendingItem[]>();
+  for (const i of items) {
+    const parts = i.target.split("/");
+    const folder = i.kind === "module" ? i.target : parts.length > 1 ? parts.slice(0, -1).join("/") : ".";
+    (groups.get(folder) ?? groups.set(folder, []).get(folder)!).push(i);
+  }
+  return [...groups].map(([folder, list]) => ({ folder, items: list })).sort((a, b) => b.items.length - a.items.length || a.folder.localeCompare(b.folder));
+}
+
+/** What the person is asked before approving many at once: what it means, and what is different about some of them. */
+export function bulkConfirmation(items: PendingItem[], by: string): { message: string; detail: string; button: string } {
+  const stale = items.filter((i) => i.stale).length;
+  const replaces = items.filter((i) => i.replacesReviewed).length;
+  const lines = [
+    `This records ${plural(items.length, "generated document")} as reviewed by ${by}.`,
+    "Each one is marked approved_in_bulk in its front matter, so it can be told apart from one you read.",
+  ];
+  if (stale) lines.push(`${plural(stale, "draft")} describe code that changed after they were written.`);
+  if (replaces) lines.push(`${plural(replaces, "draft")} replace a document someone already reviewed.`);
+  lines.push("Open a few first if you have not read any.");
+  return { message: `Approve ${plural(items.length, "draft")}?`, detail: lines.join("\n"), button: `Approve ${items.length}` };
+}
+
+export function bulkResultMessage(action: "approve" | "reject", done: number, failed: { target: string; error: string }[]): string {
+  const verb = action === "approve" ? "Approved" : "Rejected";
+  return failed.length ? `${verb} ${done}; ${failed.length} could not be ${action === "approve" ? "approved" : "rejected"} (see the Brain output).` : `${verb} ${plural(done, "draft")}.`;
+}
+
 /** Plain-text report for the output channel, errors first. */
 export function validationReport(r: ValidationResult): string[] {
   const order = { error: 0, warning: 1, info: 2 } as const;

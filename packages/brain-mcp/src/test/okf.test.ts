@@ -1,7 +1,7 @@
 import { strict as assert } from "node:assert";
 import { describe, it } from "node:test";
 import {
-  addLogEntry, bundleLinks, cycles, dependencyBlock, getPath, parseConcept, renderIndex, serializeConcept, stripAutoMarkers, withDependencyBlock,
+  addLogEntry, bundleLinks, cycles, dependencyBlock, encodeLinkPath, getPath, hasLegacyLinks, parseConcept, relativeLink, renderIndex, serializeConcept, stripAutoMarkers, withDependencyBlock,
 } from "../okf/format";
 
 describe("front matter", () => {
@@ -58,12 +58,47 @@ describe("links", () => {
   });
 });
 
+describe("links that open from an editor", () => {
+  it("are relative to the file that holds them, at any depth", () => {
+    assert.equal(relativeLink("files/src/a.ts.md", "files/src/b.ts.md"), "./b.ts.md");
+    assert.equal(relativeLink("files/src/auth/session.ts.md", "files/src/db/pool.ts.md"), "../db/pool.ts.md");
+    assert.equal(relativeLink("modules/src.md", "files/src/a.ts.md"), "../files/src/a.ts.md");
+    assert.equal(relativeLink("index.md", "files/index.md"), "./files/index.md");
+    assert.equal(relativeLink("drafts/files/src/a.ts.md", "knowledge/files/src/b.ts.md"), "../../../knowledge/files/src/b.ts.md");
+  });
+
+  it("encode what would break a Markdown link, and resolve back to the same concept", () => {
+    assert.equal(encodeLinkPath("a b/c(1)/d.md"), "a%20b/c%281%29/d.md");
+    const odd = "files/src/my file (copy)/x [1].ts.md";
+    const link = relativeLink("files/src/a.ts.md", odd);
+    assert.doesNotMatch(link, /[ ()\[\]]/);
+    assert.deepEqual(bundleLinks(`[x](${link})`, "files/src/a.ts.md"), [odd]);
+  });
+
+  it("are what the dependency block now writes, from the bundle or from a draft", () => {
+    const inBundle = dependencyBlock(["files/src/db/pool.ts.md"], ["modules/src/http.md"], { conceptPath: "files/src/auth/session.ts.md", in: "knowledge" });
+    assert.match(inBundle, /Depends on: \[src\/db\/pool\.ts\]\(\.\.\/db\/pool\.ts\.md\)/);
+    assert.match(inBundle, /Used by: \[src\/http\]\(\.\.\/\.\.\/\.\.\/modules\/src\/http\.md\)/);
+    const inDrafts = dependencyBlock(["files/src/db/pool.ts.md"], [], { conceptPath: "files/src/auth/session.ts.md", in: "drafts" });
+    assert.match(inDrafts, /\(\.\.\/\.\.\/\.\.\/\.\.\/knowledge\/files\/src\/db\/pool\.ts\.md\)/);
+    assert.deepEqual(bundleLinks(inBundle, "files/src/auth/session.ts.md"), ["files/src/db/pool.ts.md", "modules/src/http.md"], "the validator follows them to the same files");
+  });
+
+  it("tells old bundle-absolute dependency links from new ones, and only inside the managed block", () => {
+    const legacy = "# Summary\n\nSee [x](/files/a.md).\n\n<!-- brain:auto:start dependencies -->\n# Dependencies\n\n- Depends on: [b](/files/b.ts.md)\n<!-- brain:auto:end -->\n";
+    assert.equal(hasLegacyLinks(legacy), true);
+    assert.equal(hasLegacyLinks(legacy.replace("(/files/b.ts.md)", "(./b.ts.md)")), false, "a human's own absolute link outside the block is not ours to touch");
+    assert.equal(hasLegacyLinks("# Summary\n\n[x](/files/a.md)\n"), false);
+  });
+});
+
 describe("dependency block", () => {
   it("is added once and replaced in place, leaving human text alone", () => {
-    const first = withDependencyBlock("# Summary\n\nHuman text.\n", dependencyBlock(["files/src/b.ts.md"], []));
-    assert.match(first, /Depends on: \[src\/b\.ts\]\(\/files\/src\/b\.ts\.md\)/);
+    const here = { conceptPath: "files/src/a.ts.md", in: "knowledge" as const };
+    const first = withDependencyBlock("# Summary\n\nHuman text.\n", dependencyBlock(["files/src/b.ts.md"], [], here));
+    assert.match(first, /Depends on: \[src\/b\.ts\]\(\.\/b\.ts\.md\)/);
     assert.match(first, /Used by: nothing/);
-    const second = withDependencyBlock(first, dependencyBlock([], ["modules/src/http.md"]));
+    const second = withDependencyBlock(first, dependencyBlock([], ["modules/src/http.md"], here));
     assert.equal(second.match(/brain:auto:start/g)!.length, 1);
     assert.match(second, /Human text\./);
     assert.match(second, /Used by: \[src\/http\]/);

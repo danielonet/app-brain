@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
 import {
-  Coverage, DocKind, DocStatus, PendingItem, ReviewResult, TrustTier, ValidationIssue, ValidationResult,
+  Coverage, DocKind, DocStatus, PendingItem, ReviewManyResult, ReviewResult, TrustTier, ValidationIssue, ValidationResult,
 } from "@app-brain/brain-protocol";
 import { callCost } from "../cost";
 import type { DocIndex } from "./graph";
@@ -10,7 +10,7 @@ import type { BrainStore } from "../store";
 import type { BrainWorkspace } from "../workspace";
 import { Bundle, ConceptFile } from "./bundle";
 import {
-  FrontMatter, bundleLinks, cycles, dependencyBlock, getPath, isNonEmptyString, linkTo, stripAutoMarkers, withDependencyBlock,
+  FrontMatter, bundleLinks, cycles, dependencyBlock, getPath, hasLegacyLinks, isNonEmptyString, linkTo, stripAutoMarkers, withDependencyBlock,
 } from "./format";
 
 export const SERVER_PRODUCER = "brain-mcp";
@@ -435,7 +435,7 @@ export class Knowledge {
         },
       },
     };
-    const body = withDependencyBlock(`# Summary\n\n${stripAutoMarkers(a.summary).trim()}\n`, dependencyBlock(dependsOn, usedBy));
+    const body = withDependencyBlock(`# Summary\n\n${stripAutoMarkers(a.summary).trim()}\n`, dependencyBlock(dependsOn, usedBy, { conceptPath, in: "drafts" }));
     await this.bundle.write("drafts", conceptPath, fm, body);
 
     this.store().logLlmCall({
@@ -449,12 +449,12 @@ export class Knowledge {
 
   // ---- review ------------------------------------------------------------------------------
 
-  async review(a: { target: string; action: "approve" | "reject"; by: string; note?: string; body?: string }): Promise<ReviewResult> {
+  async review(a: { target: string; action: "approve" | "reject"; by: string; note?: string; body?: string; bulk?: boolean }, shared?: { drafts: ConceptFile[]; targets: Target[] }): Promise<ReviewResult> {
     const by = slug(a.by);
     if (!by) throw new Error("`by` is required: who is making this decision.");
     const target = cleanTarget(a.target);
     // The draft knows its own kind; look it up instead of trusting the caller.
-    const drafts = (await this.bundle.list("drafts")).concepts;
+    const drafts = shared?.drafts ?? (await this.bundle.list("drafts")).concepts;
     const draft = drafts.find((d) => getPath(d.fm, "brain.target") === target);
     if (!draft) throw new Error(`No draft is waiting for ${target}.`);
     const kind = getPath(draft.fm, "brain.kind") as DocKind;
@@ -465,30 +465,98 @@ export class Knowledge {
       await this.bundle.remove("drafts", conceptPath);
       await this.bundle.appendFeedback({ target, action: "reject", by, model, note: a.note ?? null, rejectedText: draft.body.slice(0, 4000) });
       this.store().setLlmOutcome(target, "rejected");
-      this.changed();
+      if (!a.bulk) this.changed();
       return { action: "reject", target, conceptPath };
     }
 
     const existed = await this.bundle.exists("knowledge", conceptPath);
     const edited = a.body !== undefined && a.body.trim() !== "";
     const fm: FrontMatter = { ...draft.fm, status: "stable", verified: { by: `human:${by}`, at: iso() } };
+    // Said in the document itself, so nobody has to guess later whether anyone read it.
+    if (a.bulk) fm.brain = { ...((fm.brain as Record<string, unknown> | undefined) ?? {}), approved_in_bulk: true };
 
     // Dependencies come from the code as it is now, not as it was when the draft was written.
-    const current = this.targets().find((t) => t.kind === kind && t.target === target);
+    const current = (shared?.targets ?? this.targets()).find((t) => t.kind === kind && t.target === target);
     let body = edited ? stripAutoMarkers(a.body!) : draft.body;
     if (current && this.indexReady()) {
       const { dependsOn, usedBy } = this.dependencies(current);
       (fm.brain as Record<string, unknown>).depends_on = dependsOn.map(linkTo);
-      body = withDependencyBlock(body, dependencyBlock(dependsOn, usedBy));
+      body = withDependencyBlock(body, dependencyBlock(dependsOn, usedBy, { conceptPath, in: "knowledge" }));
     }
     await this.bundle.write("knowledge", conceptPath, fm, body);
     await this.bundle.remove("drafts", conceptPath);
-    await this.bundle.regenerateIndexes();
-    await this.bundle.log(existed ? "Update" : "Creation", `${kind} documentation for \`${target}\` approved by ${by}${edited ? " (edited)" : ""}.`);
+    if (!a.bulk) {
+      await this.bundle.regenerateIndexes();
+      await this.bundle.log(existed ? "Update" : "Creation", `${kind} documentation for \`${target}\` approved by ${by}${edited ? " (edited)" : ""}.`);
+    }
     if (edited || a.note) await this.bundle.appendFeedback({ target, action: edited ? "approve-edited" : "approve", by, model, note: a.note ?? null });
     this.store().setLlmOutcome(target, "approved");
-    this.changed();
+    if (!a.bulk) this.changed();
     return { action: "approve", target, conceptPath };
+  }
+
+  /**
+   * Approves or rejects many drafts in one go. Each one is still checked and written on its own, and a failure on one
+   * does not stop the rest; but the indexes, the log and the change notifications happen once at the end, because doing
+   * them per document would make hundreds of approvals quadratic. Approvals are marked `approved_in_bulk` in the document.
+   */
+  async reviewMany(a: { targets: string[]; action: "approve" | "reject"; by: string; note?: string }): Promise<ReviewManyResult> {
+    const by = slug(a.by);
+    if (!by) throw new Error("`by` is required: who is making this decision.");
+    const done: ReviewResult[] = [];
+    const failed: { target: string; error: string }[] = [];
+    // Read the drafts and work out the targets once, not once per document: that is what keeps hundreds of approvals fast.
+    const shared = { drafts: (await this.bundle.list("drafts")).concepts, targets: this.targets() };
+    for (const target of [...new Set(a.targets)]) {
+      try {
+        done.push(await this.review({ target, action: a.action, by, note: a.note, bulk: true }, shared));
+      } catch (e) {
+        failed.push({ target, error: (e as Error).message });
+      }
+    }
+    if (done.length) {
+      await this.bundle.regenerateIndexes();
+      const word = a.action === "approve" ? "approved" : "rejected";
+      await this.bundle.log("Update", `${done.length} generated document${done.length === 1 ? "" : "s"} ${word} in bulk by ${by}.`);
+      this.changed();
+    }
+    return { action: a.action, done: done.length, failed, targets: done.map((d) => d.target) };
+  }
+
+  private legacyLinksChecked = false;
+
+  /**
+   * Older documents link their dependencies with bundle-absolute paths (`/files/x.md`), which an editor or a Markdown preview
+   * cannot open. Rewrites the managed Dependencies block (never the text around it) with relative links, once per run.
+   * Returns how many documents changed.
+   */
+  async migrateDependencyLinks(): Promise<number> {
+    if (this.legacyLinksChecked || !this.indexReady()) return 0;
+    this.legacyLinksChecked = true;
+    let changed = 0;
+    try {
+      const targets = this.targets();
+      for (const area of ["knowledge", "drafts"] as const) {
+        for (const c of (await this.bundle.list(area)).concepts) {
+          if (!hasLegacyLinks(c.body)) continue;
+          const current = targets.find((t) => t.kind === getPath(c.fm, "brain.kind") && t.target === getPath(c.fm, "brain.target"));
+          if (!current) continue; // the code it described is gone; leave the document as it is
+          const { dependsOn, usedBy } = this.dependencies(current);
+          const body = withDependencyBlock(c.body, dependencyBlock(dependsOn, usedBy, { conceptPath: c.conceptPath, in: area }));
+          if (body === c.body) continue;
+          await this.bundle.write(area, c.conceptPath, c.fm, body);
+          changed++;
+        }
+      }
+      if (changed) {
+        await this.bundle.regenerateIndexes();
+        await this.bundle.log("Update", `Dependency links in ${changed} document${changed === 1 ? "" : "s"} rewritten as relative links, so they open from an editor.`);
+        this.changed();
+      }
+    } catch {
+      this.legacyLinksChecked = false; // try again on the next index
+    }
+    return changed;
   }
 
   // ---- validate ----------------------------------------------------------------------------

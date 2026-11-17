@@ -9,7 +9,7 @@ import { CostPanel } from "./costPanel";
 import { collectProviderUsage } from "./providerUsage";
 import { GraphPanel } from "./graphPanel";
 import { SettingsPanel } from "./settingsPanel";
-import { ActivityItem, ConnState, ReviewRow, activityItems, estimateDetail, estimateTitle, flashText, generationBarText, generationProblems, generationProgress, generationSummary, llmTestSummary, mcpConfigSnippet, reviewRows, statusBarText, validationReport, validationSummary } from "./format";
+import { ActivityItem, ConnState, ReviewRow, activityItems, bulkConfirmation, bulkResultMessage, bulkScopes, folderGroups, isPlainDraft, estimateDetail, estimateTitle, flashText, generationBarText, generationProblems, generationProgress, generationSummary, llmTestSummary, mcpConfigSnippet, reviewRows, statusBarText, validationReport, validationSummary } from "./format";
 import { resolveAutoMode } from "./agentDetect";
 import { daemonLlm, llmEnv, localProblems, validateApiKey } from "./llmEnv";
 import { ensureDaemon, stopDaemon } from "./daemonManager";
@@ -74,7 +74,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
   const review = new ReviewProvider();
   let pending: PendingItem[] = [];
-  const reviewView = vscode.window.createTreeView("brain.review", { treeDataProvider: review });
+  const reviewView = vscode.window.createTreeView("brain.review", { treeDataProvider: review, canSelectMany: true });
   context.subscriptions.push(reviewView);
   const onPending = (items: PendingItem[]) => {
     pending = items;
@@ -304,6 +304,45 @@ export async function activate(context: vscode.ExtensionContext) {
     }
   };
 
+  /** The drafts a review command applies to: the ones selected in the tree when several are, otherwise the one clicked. */
+  const reviewItems = (row: ReviewRow | undefined, selected: ReviewRow[] | undefined): PendingItem[] => {
+    const rows = selected && selected.length > 1 ? selected : row ? [row] : [];
+    return rows.map((r) => pending.find((p) => p.target === r.target)).filter((p): p is PendingItem => Boolean(p));
+  };
+
+  /** Many at once, in batches so there is progress to show and a way to stop. The server writes each draft on its own. */
+  const BULK_BATCH = 100;
+  const bulkReview = async (items: PendingItem[], action: "approve" | "reject", note?: string) => {
+    const by = await reviewer(folder.uri.fsPath);
+    await vscode.workspace.saveAll(false); // the server approves what is on disk
+    let done = 0;
+    const failed: { target: string; error: string }[] = [];
+    await vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: `Brain: ${action === "approve" ? "approving" : "rejecting"} ${items.length} drafts`, cancellable: true },
+      async (progress, token) => {
+        for (let i = 0; i < items.length; i += BULK_BATCH) {
+          if (token.isCancellationRequested) break; // what was done stays done
+          const r = await client!.reviewMany(items.slice(i, i + BULK_BATCH).map((x) => x.target), action, by, note);
+          done += r.done;
+          failed.push(...r.failed);
+          progress.report({ increment: (100 * BULK_BATCH) / items.length, message: `${Math.min(i + BULK_BATCH, items.length)} of ${items.length}` });
+        }
+      },
+    );
+    await client!.refresh();
+    for (const f of failed) out.appendLine(`${action} ${f.target}: ${f.error}`);
+    const message = bulkResultMessage(action, done, failed);
+    if (failed.length) void vscode.window.showWarningMessage(`Brain: ${message}`); else void vscode.window.showInformationMessage(`Brain: ${message}`);
+  };
+
+  const approveMany = async (items: PendingItem[]) => {
+    const by = await reviewer(folder.uri.fsPath);
+    const ask = bulkConfirmation(items, by);
+    const ok = await vscode.window.showWarningMessage(ask.message, { modal: true, detail: ask.detail }, ask.button);
+    if (ok !== ask.button) return;
+    await bulkReview(items, "approve");
+  };
+
   client = await make();
 
   /** Starts a fresh server, e.g. after the LLM settings or the key changed. */
@@ -353,9 +392,11 @@ export async function activate(context: vscode.ExtensionContext) {
       if (!item) return;
       await vscode.window.showTextDocument(vscode.Uri.file(path.join(folder.uri.fsPath, item.draftFile)));
     }),
-    vscode.commands.registerCommand("brain.review.approve", (row: ReviewRow) =>
+    vscode.commands.registerCommand("brain.review.approve", (row: ReviewRow, selected?: ReviewRow[]) =>
       run("approve", async () => {
-        const item = pending.find((p) => p.target === row?.target);
+        const chosen = reviewItems(row, selected);
+        if (chosen.length > 1) return approveMany(chosen);
+        const item = chosen[0];
         if (!item) return;
         if (item.stale) {
           const ok = await vscode.window.showWarningMessage(`The code in ${item.target} changed after this doc was written. Approve anyway?`, { modal: true }, "Approve anyway");
@@ -367,14 +408,45 @@ export async function activate(context: vscode.ExtensionContext) {
         await client!.refresh();
       }),
     ),
-    vscode.commands.registerCommand("brain.review.reject", (row: ReviewRow) =>
+    vscode.commands.registerCommand("brain.review.reject", (row: ReviewRow, selected?: ReviewRow[]) =>
       run("reject", async () => {
-        const item = pending.find((p) => p.target === row?.target);
+        const chosen = reviewItems(row, selected);
+        const item = chosen[0];
         if (!item) return;
-        const note = await vscode.window.showInputBox({ prompt: `Why reject the doc for ${item.target}? (optional; the next attempt can use it)`, placeHolder: "Too vague, missed the retry logic…" });
+        const many = chosen.length > 1;
+        const note = await vscode.window.showInputBox({ prompt: many ? `Why reject these ${chosen.length} docs? (optional; the next attempt can use it)` : `Why reject the doc for ${item.target}? (optional; the next attempt can use it)`, placeHolder: "Too vague, missed the retry logic…" });
         if (note === undefined) return; // cancelled
+        if (many) return bulkReview(chosen, "reject", note);
         await client!.review(item.target, "reject", await reviewer(folder.uri.fsPath), note);
         await client!.refresh();
+      }),
+    ),
+    vscode.commands.registerCommand("brain.review.approveMany", () =>
+      run("approve many", async () => {
+        if (pending.length === 0) return void vscode.window.showInformationMessage("Brain: no drafts are waiting for review.");
+        const scope = await vscode.window.showQuickPick(
+          bulkScopes(pending).map((s) => ({ label: s.label, description: s.description, scope: s })),
+          { title: `Approve many of ${pending.length} drafts`, placeHolder: "Which drafts?" },
+        );
+        if (!scope) return;
+        let chosen = scope.scope.items;
+        if (scope.scope.id === "folders") {
+          const groups = await vscode.window.showQuickPick(
+            folderGroups(pending).map((g) => ({ label: g.folder, description: `${g.items.length} draft${g.items.length === 1 ? "" : "s"}`, group: g })),
+            { title: "Approve everything in these folders", canPickMany: true, matchOnDescription: true },
+          );
+          if (!groups) return;
+          chosen = groups.flatMap((g) => g.group.items);
+        } else if (scope.scope.id === "pick") {
+          const picks = await vscode.window.showQuickPick(
+            pending.map((i) => ({ label: i.target, description: [i.kind, i.stale ? "code changed since" : "", i.replacesReviewed ? "replaces reviewed doc" : ""].filter(Boolean).join(" · "), picked: isPlainDraft(i), item: i })),
+            { title: "Approve these drafts", canPickMany: true, matchOnDescription: true },
+          );
+          if (!picks) return;
+          chosen = picks.map((p) => p.item);
+        }
+        if (chosen.length === 0) return;
+        await approveMany(chosen);
       }),
     ),
     vscode.commands.registerCommand("brain.validate", () =>

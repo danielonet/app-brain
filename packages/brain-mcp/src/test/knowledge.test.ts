@@ -119,8 +119,9 @@ describe("documentation flow: draft, review, approve", () => {
     assert.equal(brain.llm.tokens_source, "agent-reported");
     assert.equal(brain.llm.cost_usd, null, "no price configured for this model");
     assert.match(body, /^# Summary\n\nHandles sessions\./);
-    assert.match(body, /Depends on: \[src\/db\/pool\.ts\]\(\/files\/src\/db\/pool\.ts\.md\)/);
-    assert.match(body, /Used by: \[src\/http\/login\.ts\]\(\/files\/src\/http\/login\.ts\.md\)/);
+    // A draft sits in drafts/, so it links across into knowledge/, where its neighbours will be.
+    assert.match(body, /Depends on: \[src\/db\/pool\.ts\]\(\.\.\/\.\.\/\.\.\/\.\.\/knowledge\/files\/src\/db\/pool\.ts\.md\)/);
+    assert.match(body, /Used by: \[src\/http\/login\.ts\]\(\.\.\/\.\.\/\.\.\/\.\.\/knowledge\/files\/src\/http\/login\.ts\.md\)/);
   });
 
   it("estimates output tokens when the agent gives none", async () => {
@@ -178,10 +179,10 @@ describe("documentation flow: draft, review, approve", () => {
     assert.equal((fm.brain as any).llm.model, MODEL, "brain data survives review");
 
     const index = readFileSync(p("knowledge/files/src/auth/index.md"), "utf8");
-    assert.match(index, /\[src\/auth\/session\.ts\]\(\/files\/src\/auth\/session\.ts\.md\): Creates and looks up user sessions\./);
+    assert.match(index, /\[src\/auth\/session\.ts\]\(\.\/session\.ts\.md\): Creates and looks up user sessions\./);
     const root = readFileSync(p("knowledge/index.md"), "utf8");
     assert.match(root, /okf_version/);
-    assert.match(root, /\[files\/\]\(\/files\/index\.md\)/);
+    assert.match(root, /\[files\/\]\(\.\/files\/index\.md\)/);
     assert.match(readFileSync(p("knowledge/log.md"), "utf8"), /\*\*Creation\*\*: file documentation for `src\/auth\/session\.ts` approved by J\.-Doe\./);
 
     const cov = await readJson(admin, Resources.coverage);
@@ -348,5 +349,119 @@ describe("approval never recomputes dependencies from a partial index", () => {
       assert.deepEqual(depsOf("knowledge"), [], "refreshed when the index is ready");
       store.close();
     } finally { cleanDir(root); }
+  });
+});
+
+describe("approving many drafts at once", () => {
+  let ws: string;
+  let agent: Client;
+  let admin: Client;
+  const p = (...parts: string[]) => path.join(ws, ".brain", ...parts);
+  const TARGETS = ["src/auth/session.ts", "src/db/pool.ts", "src/http/login.ts"];
+
+  before(async () => {
+    ws = fixture();
+    admin = await connect(ws, { admin: true, clientName: "brain-vscode" });
+    await ready(admin, 4);
+    agent = await connect(ws, { clientName: "claude-code" });
+    await ready(agent, 4);
+    await tool(admin, AdminTools.init);
+    for (const target of TARGETS) await tool(agent, AgentTools.saveSummary, { target, description: `About ${target}.`, summary: `Does things in ${target}.`, model: MODEL });
+  });
+  after(async () => {
+    await agent.close();
+    await admin.close();
+    cleanDir(ws);
+  });
+
+  it("approves every draft in one call, writes one log entry, and says in each document that it was approved in bulk", async () => {
+    const r = await tool(admin, AdminTools.reviewMany, { targets: [...TARGETS, "src/missing.ts"], action: "approve", by: "J. Doe" });
+    assert.equal(r.isError, false, r.text);
+    assert.equal(r.body.done, 3);
+    assert.deepEqual(r.body.failed.map((f: { target: string }) => f.target), ["src/missing.ts"], "one that cannot be approved does not stop the others");
+    assert.match(r.body.failed[0].error, /No draft is waiting/);
+    for (const t of TARGETS) {
+      assert.equal(existsSync(p("drafts/files", t + ".md")), false);
+      const doc = parseConcept(readFileSync(p("knowledge/files", t + ".md"), "utf8"));
+      assert.ok(doc.ok);
+      assert.equal((doc.fm.verified as { by: string }).by, "human:J.-Doe");
+      assert.equal(doc.fm.status, "stable");
+      assert.equal((doc.fm.brain as { approved_in_bulk?: boolean }).approved_in_bulk, true);
+    }
+    // The point of relative links: from each document, every dependency link leads to a file that exists, the way an editor resolves it.
+    let followed = 0;
+    for (const t of TARGETS) {
+      const file = p("knowledge/files", t + ".md");
+      const text = readFileSync(file, "utf8");
+      for (const m of text.matchAll(/\]\((\.{1,2}\/[^)\s]+)\)/g)) {
+        const resolved = path.resolve(path.dirname(file), decodeURIComponent(m[1]));
+        if (!TARGETS.some((x) => resolved.endsWith("/" + x + ".md"))) continue; // a neighbour nobody has documented yet: there is nothing to open
+        assert.equal(existsSync(resolved), true, `${t}: ${m[1]} opens`);
+        followed++;
+      }
+    }
+    assert.ok(followed >= 4, `followed ${followed} links`);
+    const index = readFileSync(p("knowledge/files/src/auth/index.md"), "utf8");
+    for (const m of index.matchAll(/\]\((\.{1,2}\/[^)\s]+)\)/g)) assert.equal(existsSync(path.resolve(p("knowledge/files/src/auth"), m[1])), true, `index link ${m[1]} opens`);
+    const log = readFileSync(p("knowledge/log.md"), "utf8");
+    assert.equal((log.match(/approved in bulk by J\.-Doe/g) ?? []).length, 1, "one entry for the whole batch, not one per document");
+    assert.match(log, /3 generated documents approved in bulk/);
+    assert.match(readFileSync(p("knowledge/files/src/auth/index.md"), "utf8"), /session\.ts/, "the indexes are regenerated");
+    assert.equal((await readJson(admin, Resources.pendingReview)).length, 0);
+    assert.equal((await readJson(admin, Resources.coverage)).files.reviewed, 3);
+  });
+
+  it("does not mark a one-by-one approval as bulk", async () => {
+    await tool(agent, AgentTools.saveSummary, { target: "src/db/pool.ts", description: "Again.", summary: "Another pass.", model: MODEL });
+    await tool(admin, AdminTools.reviewSummary, { target: "src/db/pool.ts", action: "approve", by: "j" });
+    const doc = parseConcept(readFileSync(p("knowledge/files/src/db/pool.ts.md"), "utf8"));
+    assert.ok(doc.ok);
+    assert.equal((doc.fm.brain as { approved_in_bulk?: boolean }).approved_in_bulk, undefined);
+  });
+
+  it("rejects many at once with one note, keeping it for the next attempt", async () => {
+    for (const target of ["src/db/pool.ts", "src/http/login.ts"]) await tool(agent, AgentTools.saveSummary, { target, description: "d", summary: "Too vague.", model: MODEL });
+    const r = await tool(admin, AdminTools.reviewMany, { targets: ["src/db/pool.ts", "src/http/login.ts"], action: "reject", by: "j", note: "Too vague" });
+    assert.equal(r.body.done, 2);
+    assert.equal(existsSync(p("drafts/files/src/db/pool.ts.md")), false);
+    const feedback = readFileSync(p("feedback/feedback.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    assert.equal(feedback.filter((f) => f.action === "reject" && f.note === "Too vague").length, 2);
+  });
+
+  it("is for people only: an agent cannot approve in bulk either", async () => {
+    const r = await tool(agent, AdminTools.reviewMany, { targets: TARGETS, action: "approve", by: "x" });
+    assert.equal(r.isError, true);
+  });
+});
+
+describe("links in documents written before they were relative", () => {
+  it("are rewritten once, so they open; the text around the block is not touched", async () => {
+    const ws = fixture();
+    let admin: Client | undefined;
+    try {
+      let c = await connect(ws, { admin: true, clientName: "brain-vscode" });
+      await ready(c, 4);
+      await tool(c, AdminTools.init);
+      const agent = await connect(ws, { clientName: "claude-code" });
+      for (const target of ["src/auth/session.ts", "src/db/pool.ts"]) await tool(agent, AgentTools.saveSummary, { target, description: "d", summary: `Human words about ${target}.`, model: MODEL });
+      await tool(c, AdminTools.reviewMany, { targets: ["src/auth/session.ts", "src/db/pool.ts"], action: "approve", by: "j" });
+      await agent.close();
+      await c.close();
+
+      // put the old form back: bundle-absolute links, as the first releases wrote them
+      const file = path.join(ws, ".brain/knowledge/files/src/auth/session.ts.md");
+      const before = readFileSync(file, "utf8");
+      const legacy = before.replace(/\]\(\.\.\/db\/pool\.ts\.md\)/, "](/files/src/db/pool.ts.md)");
+      assert.notEqual(legacy, before, "the fixture really has the old form");
+      writeFileSync(file, legacy);
+      writeFileSync(path.join(ws, ".brain/knowledge/index.md"), readFileSync(path.join(ws, ".brain/knowledge/index.md"), "utf8").replace("](./files/index.md)", "](/files/index.md)"));
+
+      c = await connect(ws, { admin: true, clientName: "brain-vscode" });
+      admin = c;
+      await ready(c, 4);
+      for (let i = 0; i < 60 && readFileSync(file, "utf8") === legacy; i++) await new Promise((r) => setTimeout(r, 100));
+      assert.equal(readFileSync(file, "utf8"), before, "back to the relative link, and nothing else changed");
+      assert.match(readFileSync(path.join(ws, ".brain/knowledge/log.md"), "utf8"), /rewritten as relative links/);
+    } finally { await admin?.close(); cleanDir(ws); }
   });
 });
