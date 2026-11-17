@@ -120,8 +120,10 @@ export async function activate(context: vscode.ExtensionContext) {
     return collectProviderUsage({
       workspace: folder.uri.fsPath,
       pricing,
-      settings: { claudeCodeLogs: cfg().get<boolean>("usage.claudeCodeLogs", true), anthropicAdmin: cfg().get<boolean>("usage.anthropicAdmin.enabled", false), lookbackDays: cfg().get<number>("usage.lookbackDays", 30) },
+      settings: { claudeCodeLogs: cfg().get<boolean>("usage.claudeCodeLogs", true), copilotLogs: cfg().get<boolean>("usage.copilotLogs", true), anthropicAdmin: cfg().get<boolean>("usage.anthropicAdmin.enabled", false), lookbackDays: cfg().get<number>("usage.lookbackDays", 30) },
       adminKey: await context.secrets.get(ADMIN_KEY),
+      // VS Code gives each workspace a storage folder; Copilot Chat's sessions sit beside the extensions' own folders in its parent.
+      copilotSessionsDir: context.storageUri ? path.join(path.dirname(context.storageUri.fsPath), "chatSessions") : undefined,
     });
   };
   const llmSettings = () => ({

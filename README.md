@@ -136,7 +136,9 @@ Every document written is recorded with the model, the token counts and where th
 - **Claude Code in this workspace** (on by default), read from the session logs Claude Code keeps on this machine (`~/.claude/projects`, or `CLAUDE_CONFIG_DIR`). Only token counts, the model, the time and the working directory are read, never what was typed or answered. Cost is worked out from your price table (a cache read at 0.1x the input price, a cache write at 1.25x or 2x unless the table says otherwise), so it is what the API would charge, not what a subscription costs you.
 - **Anthropic organisation** (off by default), from the Usage and Cost Admin API: tokens by day and model, and the dollars Anthropic billed. It needs an Admin API key from a Claude Console organisation (**Brain: Set Anthropic Admin Key**; kept in VS Code's secret storage, sent only to api.anthropic.com) and it covers the whole organisation, not just this repository.
 
-Settings: `brain.usage.claudeCodeLogs`, `brain.usage.anthropicAdmin.enabled`, `brain.usage.lookbackDays` (1 to 90, default 30). Copilot and Cursor are not included yet: Copilot reports premium requests rather than tokens, and Cursor's usage API is for team admins.
+- **GitHub Copilot Chat in this workspace** (on by default), read from the chat session files VS Code keeps for this workspace. Only token counts, Copilot's own credit figure, the model and the time are read. Output tokens are complete; input is a lower bound, because the log keeps only the last round of each agent turn. Credits are shown as Copilot reports them and are not converted to dollars; cost appears only for models you have priced.
+
+Settings: `brain.usage.claudeCodeLogs`, `brain.usage.copilotLogs`, `brain.usage.anthropicAdmin.enabled`, `brain.usage.lookbackDays` (1 to 90, default 30). Cursor is not included yet: its usage API is for team admins.
 
 ### One shared server, and its security
 
@@ -168,7 +170,7 @@ By default (`brain.server.transport`: `http`) the extension starts one `brain-mc
 
 **Built:** the index and agent tools; the OKF knowledge base with drafts, review, bulk review, feedback and validation; generation by an agent, the editor's model, a Claude API key or a local model; the shared daemon and its security; the dependency graph; cost reporting and provider usage for Claude; the settings form; CI on Linux, macOS and Windows, and publishing to the Marketplace.
 
-**Not built yet:** notes (`add_note`) and MCP prompts; call edges from an LSP or SCIP (edges are tree-sitter name matches); embeddings and semantic search; CodeLens for stale docs, a Brain tree view and a coverage dashboard; diff and edit inside the Review Queue; usage levels 2 and 3; Copilot and Cursor usage; automatic generation after indexing (`docs.autoGenerate` is reserved and does nothing); a CLI and a docs site export; more languages. And the benchmarks that would show whether any of this makes agents better.
+**Not built yet:** notes (`add_note`) and MCP prompts; call edges from an LSP or SCIP (edges are tree-sitter name matches); embeddings and semantic search; CodeLens for stale docs, a Brain tree view and a coverage dashboard; diff and edit inside the Review Queue; usage levels 2 and 3; Cursor usage; automatic generation after indexing (`docs.autoGenerate` is reserved and does nothing); a CLI and a docs site export; more languages. And the benchmarks that would show whether any of this makes agents better.
 
 **Not yet checked by hand:** a full session in a real VS Code window, a real Anthropic Admin key, a real Ollama server, and macOS and Windows behaviour beyond what the tests cover. See [PLAN-VSCODE-EXTENSION.md](PLAN-VSCODE-EXTENSION.md) §13 for the detail and the order of what comes next.
 

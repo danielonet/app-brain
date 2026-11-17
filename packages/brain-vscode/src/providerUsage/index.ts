@@ -1,11 +1,14 @@
 import { createHash } from "node:crypto";
-import type { AnthropicOrgUsage, ProviderUsage } from "@app-brain/brain-protocol";
+import type { AnthropicOrgUsage, CopilotUsage, ProviderUsage } from "@app-brain/brain-protocol";
 import { FetchLike, fetchAnthropicOrgUsage } from "./anthropicAdmin";
 import { readClaudeCodeUsage } from "./claudeCodeLogs";
+import { readCopilotUsage } from "./copilotLogs";
 import { Pricing, emptyBlock } from "./shared";
 
 export interface UsageSettings {
   claudeCodeLogs: boolean;
+  /** Optional so callers written before it existed keep working: on by default, like Claude Code. */
+  copilotLogs?: boolean;
   anthropicAdmin: boolean;
   lookbackDays: number;
 }
@@ -18,6 +21,8 @@ export interface CollectOptions {
   adminKey: string | undefined;
   env?: NodeJS.ProcessEnv;
   home?: string;
+  /** This workspace's own `chatSessions` folder, where VS Code keeps Copilot Chat sessions. */
+  copilotSessionsDir?: string;
   now?: Date;
   fetch?: FetchLike;
 }
@@ -36,6 +41,10 @@ export async function collectProviderUsage(o: CollectOptions): Promise<ProviderU
     ? await readClaudeCodeUsage({ workspace: o.workspace, pricing: o.pricing, lookbackDays: days, env: o.env, home: o.home, now })
     : { ...emptyBlock("off", "Reading Claude Code's local logs is turned off (setting brain.usage.claudeCodeLogs)."), source: null, sessions: 0 };
 
+  const copilot: CopilotUsage = o.settings.copilotLogs === false
+    ? { ...emptyBlock("off", "Reading Copilot Chat's local sessions is turned off (setting brain.usage.copilotLogs)."), source: null, sessions: 0, credits: null }
+    : await readCopilotUsage({ dir: o.copilotSessionsDir, pricing: o.pricing, lookbackDays: days, now });
+
   let anthropicOrg: AnthropicOrgUsage;
   if (!o.settings.anthropicAdmin) {
     anthropicOrg = { ...emptyBlock("off", "Anthropic organisation usage is off. Turn on brain.usage.anthropicAdmin and run “Brain: Set Anthropic Admin Key”."), costIsBilled: false };
@@ -50,7 +59,7 @@ export async function collectProviderUsage(o: CollectOptions): Promise<ProviderU
       if (anthropicOrg.state !== "error") orgCache = { fingerprint, at: now.getTime(), result: anthropicOrg };
     }
   }
-  return { generatedAt: now.toISOString(), lookbackDays: days, claudeCode, anthropicOrg };
+  return { generatedAt: now.toISOString(), lookbackDays: days, claudeCode, copilot, anthropicOrg };
 }
 
 /** For tests. */
