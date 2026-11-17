@@ -7,6 +7,14 @@ const root = path.resolve(__dirname, "..", "..");
 const manifest = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8"));
 
 describe("extension manifest", () => {
+  it("draws the activity bar icon from a single-colour 24px SVG, which is all VS Code can recolour", () => {
+    const icon: string = manifest.contributes.viewsContainers.activitybar[0].icon;
+    assert.match(icon, /\.svg$/);
+    const svg = readFileSync(path.join(root, icon), "utf8");
+    assert.match(svg, /viewBox="0 0 24 24"/);
+    assert.equal((svg.match(/fill="/g) ?? []).length, 1, "one fill, no colours");
+    assert.doesNotMatch(svg, /<image|data:|<script|<style|gradient/i);
+  });
   it("has a square PNG icon of at least 128px, with a transparent corner", () => {
     const file = path.join(root, manifest.icon);
     const png = readFileSync(file);
