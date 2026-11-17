@@ -23,7 +23,7 @@
       { "id": "brain.mcp", "label": "App Brain" }
     ],
     "viewsContainers": {
-      "activitybar": [{ "id": "brain", "title": "App Brain", "icon": "$(book)" }]
+      "activitybar": [{ "id": "brain", "title": "App Brain", "icon": "media/brain.svg" }]
     },
     "views": {
       "brain": [

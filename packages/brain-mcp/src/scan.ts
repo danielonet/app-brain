@@ -65,7 +65,9 @@ async function listWithGit(workspace: string): Promise<string[] | null> {
     const { stdout } = await execFileAsync(
       "git",
       ["-C", workspace, "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
-      { maxBuffer: 256 * 1024 * 1024 },
+      // windowsHide: the server runs without a console, so on Windows git would open (and flash) a window of its own.
+      // windowsHide: the server runs without a console, so on Windows git would open (and flash) a window of its own.
+      { maxBuffer: 256 * 1024 * 1024, windowsHide: true },
     );
     return stdout.split("\0").filter(Boolean);
   } catch {

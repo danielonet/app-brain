@@ -512,7 +512,7 @@ class ReviewProvider implements vscode.TreeDataProvider<ReviewRow> {
 /** Who is reviewing: the git user, else the OS user. Recorded as `human:<name>` in the doc. */
 function reviewer(cwd: string): Promise<string> {
   return new Promise((resolve) =>
-    execFile("git", ["config", "user.name"], { cwd }, (err, stdout) => resolve(!err && stdout.trim() ? stdout.trim() : os.userInfo().username)),
+    execFile("git", ["config", "user.name"], { cwd, windowsHide: true }, (err, stdout) => resolve(!err && stdout.trim() ? stdout.trim() : os.userInfo().username)),
   );
 }
 
