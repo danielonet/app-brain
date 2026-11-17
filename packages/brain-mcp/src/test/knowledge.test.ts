@@ -459,8 +459,8 @@ describe("links in documents written before they were relative", () => {
       c = await connect(ws, { admin: true, clientName: "brain-vscode" });
       admin = c;
       await ready(c, 4);
-      for (let i = 0; i < 60 && readFileSync(file, "utf8") === legacy; i++) await new Promise((r) => setTimeout(r, 100));
-      assert.equal(readFileSync(file, "utf8"), before, "back to the relative link, and nothing else changed");
+      for (let i = 0; i < 200 && readFileSync(file, "utf8") === legacy; i++) await new Promise((r) => setTimeout(r, 100));
+      assert.equal(readFileSync(file, "utf8"), before, `back to the relative link, and nothing else changed (log: ${JSON.stringify(readFileSync(path.join(ws, ".brain/knowledge/log.md"), "utf8"))})`);
       assert.match(readFileSync(path.join(ws, ".brain/knowledge/log.md"), "utf8"), /rewritten as relative links/);
     } finally { await admin?.close(); cleanDir(ws); }
   });

@@ -523,29 +523,37 @@ export class Knowledge {
     return { action: a.action, done: done.length, failed, targets: done.map((d) => d.target) };
   }
 
-  private legacyLinksChecked = false;
+  private legacyLinksDone = false;
+  private legacyLinksAttempts = 0;
+  private legacyLinksTimer: NodeJS.Timeout | undefined;
 
   /**
    * Older documents link their dependencies with bundle-absolute paths (`/files/x.md`), which an editor or a Markdown preview
-   * cannot open. Rewrites the managed Dependencies block (never the text around it) with relative links, once per run.
+   * cannot open. Rewrites the managed Dependencies block (never the text around it) with relative links.
+   * Runs after each index until it has gone through every document without a problem; a document that could not be written
+   * (a file held open for a moment, which Windows does) is tried again shortly, a few times, then left for the next start.
    * Returns how many documents changed.
    */
   async migrateDependencyLinks(): Promise<number> {
-    if (this.legacyLinksChecked || !this.indexReady()) return 0;
-    this.legacyLinksChecked = true;
+    if (this.legacyLinksDone || !this.indexReady()) return 0;
     let changed = 0;
+    let problems = 0;
     try {
       const targets = this.targets();
       for (const area of ["knowledge", "drafts"] as const) {
         for (const c of (await this.bundle.list(area)).concepts) {
           if (!hasLegacyLinks(c.body)) continue;
           const current = targets.find((t) => t.kind === getPath(c.fm, "brain.kind") && t.target === getPath(c.fm, "brain.target"));
-          if (!current) continue; // the code it described is gone; leave the document as it is
-          const { dependsOn, usedBy } = this.dependencies(current);
-          const body = withDependencyBlock(c.body, dependencyBlock(dependsOn, usedBy, { conceptPath: c.conceptPath, in: area }));
-          if (body === c.body) continue;
-          await this.bundle.write(area, c.conceptPath, c.fm, body);
-          changed++;
+          if (!current) { if (targets.length === 0) problems++; continue; } // no targets means the index is not usable yet; otherwise the code it described is gone: leave it
+          try {
+            const { dependsOn, usedBy } = this.dependencies(current);
+            const body = withDependencyBlock(c.body, dependencyBlock(dependsOn, usedBy, { conceptPath: c.conceptPath, in: area }));
+            if (body === c.body) continue;
+            await this.bundle.write(area, c.conceptPath, c.fm, body);
+            changed++;
+          } catch {
+            problems++;
+          }
         }
       }
       if (changed) {
@@ -554,7 +562,13 @@ export class Knowledge {
         this.changed();
       }
     } catch {
-      this.legacyLinksChecked = false; // try again on the next index
+      problems++;
+    }
+    if (problems === 0) this.legacyLinksDone = true;
+    else if (++this.legacyLinksAttempts < 5) {
+      clearTimeout(this.legacyLinksTimer);
+      this.legacyLinksTimer = setTimeout(() => void this.migrateDependencyLinks().catch(() => {}), 1500);
+      this.legacyLinksTimer.unref();
     }
     return changed;
   }
