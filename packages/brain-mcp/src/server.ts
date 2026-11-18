@@ -17,12 +17,16 @@ import {
   HelloResult,
   PROTOCOL_VERSION,
   PutEdgesInputSchema,
+  SetEmbeddingsInputSchema,
+  type SetEmbeddingsInput,
+  DEFAULT_LOCAL_BASE_URL,
   type PutEdgesInput,
   type PutEdgesResult,
   ReindexResult,
   Resources,
   SYMBOL_KINDS,
 } from "@app-brain/brain-protocol";
+import { EmbeddingService, search as searchSymbols } from "./embed/service";
 import { Indexer } from "./indexer";
 import { summarize, toCsv, toMarkdown } from "./cost";
 import { Generator } from "./generate/generator";
@@ -115,6 +119,8 @@ export function createBrainCore(opts: BrainServerOptions) {
   let initialisedAtStart = false;
   const indexer = new Indexer(ws, store, { onProgress: (m) => setState({ message: m }) });
 
+  const embeddings = new EmbeddingService(() => store, () => notify(Resources.status));
+
   const knowledge = new Knowledge(
     ws,
     () => store,
@@ -174,6 +180,7 @@ export function createBrainCore(opts: BrainServerOptions) {
       },
       index: { files: c.files, symbols: c.symbols, edges: c.edges, byLanguage: c.byLanguage, lastIndexedAt: c.lastIndexedAt },
       knowledge: await knowledge.counts(),
+      search: { embeddings: embeddings.current },
       llm: (({ mode, model, provider, problem }) => ({ mode, model, ready: provider !== null, problem }))(llm()),
       cost: await costTotals(),
       message: state.message,
@@ -212,6 +219,7 @@ export function createBrainCore(opts: BrainServerOptions) {
       const result = await indexer.run();
       setState({ state: "idle", message: null });
       notify(Resources.status);
+      void embeddings.sync(); // new or changed symbols get their vectors in the background
       void knowledge.migrateDependencyLinks().catch(() => {}); // once per run: old absolute links become relative ones
       return result;
     } catch (e) {
@@ -285,17 +293,18 @@ export function createBrainCore(opts: BrainServerOptions) {
 
   agentTool(
     AgentTools.searchCode,
-    "Find functions, classes, methods, types and other symbols by name or by what they do. Matches identifiers (camelCase and snake_case split into words), signatures and doc comments. Returns compact hits; use get_symbol for one symbol's details.",
+    "Find functions, classes, methods, types and other symbols by name or by what they do. Matches identifiers (camelCase and snake_case split into words), signatures and doc comments, and, when semantic search is on, meaning ('sign a user in' finds login). Returns compact hits; use get_symbol for one symbol's details.",
     {
       query: z.string().min(1).describe("Words or an identifier, e.g. 'user by id' or 'SessionStore'."),
       kind: z.enum(SYMBOL_KINDS).optional().describe("Restrict to one kind of symbol."),
       limit: z.number().int().min(1).max(50).default(10),
       offset: z.number().int().min(0).default(0).describe("For paging: pass next_offset from the previous result."),
+      mode: z.enum(["auto", "keyword", "semantic"]).default("auto").describe("auto: keyword and meaning together when semantic search is on, else keyword. keyword: names and words only. semantic: by meaning only."),
     },
-    ({ query, kind, limit, offset }) => {
-      const { total, hits } = store.search(query, { kind, limit, offset });
+    async ({ query, kind, limit, offset, mode }) => {
+      const { total, hits, mode: used, note } = await searchSymbols(store, embeddings, query, { kind, limit, offset, mode });
       const next = offset + hits.length;
-      return { total, results: hits.map(brief), ...(next < total ? { next_offset: next } : {}), ...notReady() };
+      return { total, search: used, ...(note ? { note } : {}), results: hits.map(brief), ...(next < total ? { next_offset: next } : {}), ...notReady() };
     },
   );
 
@@ -641,6 +650,15 @@ export function createBrainCore(opts: BrainServerOptions) {
         return fail((e as Error).message);
       }
     }),
+  );
+
+  server.registerTool(
+    AdminTools.setEmbeddings,
+    {
+      description: "Turn meaning-based search on, off, or point it at another embedding server. Held in memory only: the extension sends it each time it connects, so an address from a repository's files can never choose where code goes. Returns at once; vectors are computed in the background.",
+      inputSchema: SetEmbeddingsInputSchema.shape,
+    },
+    guarded(async (input: SetEmbeddingsInput) => json(embeddings.configure(input.model.trim() ? { model: input.model.trim(), baseUrl: input.baseUrl.trim() || DEFAULT_LOCAL_BASE_URL, apiKey: input.apiKey?.trim() || undefined } : null))),
   );
 
   server.registerTool(

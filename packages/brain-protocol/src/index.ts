@@ -58,6 +58,7 @@ export const AdminTools = {
   generateDocs: "brain_admin_generate_docs",
   cancelGeneration: "brain_admin_cancel_generation",
   putEdges: "brain_admin_put_edges",
+  setEmbeddings: "brain_admin_set_embeddings",
 } as const;
 
 export const ENV_ADMIN_TOKEN = "BRAIN_ADMIN_TOKEN";
@@ -171,6 +172,7 @@ export const StatusSchema = z.object({
     transport: z.enum(["stdio", "http"]),
     clients: z.array(z.object({ name: z.string().nullable(), admin: z.boolean() })).describe("Everyone connected right now."),
   }),
+  search: z.object({ embeddings: z.custom<EmbeddingStatus>() }).optional(),
   llm: z.object({
     mode: z.enum(LLM_MODES),
     model: z.string().nullable(),
@@ -215,6 +217,23 @@ export const ReindexResultSchema = z.object({
   durationMs: z.number().nonnegative(),
 });
 export type ReindexResult = z.infer<typeof ReindexResultSchema>;
+
+/** Meaning-based search: whether it is on, and how far its vectors are computed. */
+export interface EmbeddingStatus {
+  state: "off" | "building" | "ready" | "error";
+  model: string | null;
+  endpoint: string | null;
+  done: number;
+  total: number;
+  message: string;
+}
+
+export const SetEmbeddingsInputSchema = z.object({
+  model: z.string().describe("The embedding model the server runs. Empty turns semantic search off."),
+  baseUrl: z.string().describe("The server's OpenAI-compatible URL, usually ending in /v1."),
+  apiKey: z.string().optional(),
+});
+export type SetEmbeddingsInput = z.infer<typeof SetEmbeddingsInputSchema>;
 
 /** What a language server can say about how files relate, beyond what an import shows. */
 export const LSP_EDGE_KINDS = ["calls", "extends"] as const;
