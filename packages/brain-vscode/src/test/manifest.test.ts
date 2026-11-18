@@ -12,7 +12,9 @@ describe("extension manifest", () => {
     assert.match(icon, /\.svg$/);
     const svg = readFileSync(path.join(root, icon), "utf8");
     assert.match(svg, /viewBox="0 0 24 24"/);
-    assert.equal((svg.match(/fill="/g) ?? []).length, 1, "one fill, no colours");
+    // Fills and strokes may be "none" or one colour. VS Code recolours the whole icon, so a second colour would be lost.
+    const colours = new Set([...svg.matchAll(/(?:fill|stroke)="([^"]+)"/g)].map((m) => m[1].toLowerCase()).filter((c) => c !== "none"));
+    assert.equal(colours.size, 1, `one colour, not ${[...colours].join(", ")}`);
     assert.doesNotMatch(svg, /<image|data:|<script|<style|gradient/i);
   });
   it("has a square PNG icon of at least 128px, with a transparent corner", () => {
