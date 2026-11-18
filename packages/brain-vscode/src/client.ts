@@ -13,6 +13,8 @@ import {
   InitResult,
   PROTOCOL_VERSION,
   PendingItem,
+  type PutEdgesInput,
+  type PutEdgesResult,
   ReviewManyResult,
   ReviewResult,
   ValidationResult,
@@ -348,6 +350,9 @@ export class BrainClient {
 
   initialise(): Promise<InitResult> {
     return this.call<InitResult>(AdminTools.init);
+  }
+  putEdges(input: PutEdgesInput): Promise<PutEdgesResult> {
+    return this.call<PutEdgesResult>(AdminTools.putEdges, input);
   }
   reindex(): Promise<ReindexResult> {
     return this.call<ReindexResult>(AdminTools.reindex);

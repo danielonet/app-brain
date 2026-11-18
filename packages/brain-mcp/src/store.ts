@@ -47,6 +47,20 @@ export interface LlmCallRow {
   outcome: string;
 }
 
+/**
+ * Two files can be related more than once (an import, and calls). Dependencies are about the pair, so each pair is listed once:
+ * the import if there is one, else what the language server found. The rows are sorted, so this keeps their order.
+ */
+function onePerPair(rows: EdgeRow[]): EdgeRow[] {
+  const best = new Map<string, EdgeRow>();
+  for (const r of rows) {
+    const k = `${r.from}\0${r.to}`;
+    const had = best.get(k);
+    if (!had || (had.kind !== "imports" && r.kind === "imports")) best.set(k, r);
+  }
+  return [...best.values()];
+}
+
 export interface EdgeRow {
   from: string;
   to: string;
@@ -243,6 +257,8 @@ export class BrainStore {
     this.run("DELETE FROM symbol_fts WHERE rowid IN (SELECT id FROM symbol WHERE file_id = ?)", fileId);
     this.run("DELETE FROM symbol WHERE file_id = ?", fileId);
     this.run("DELETE FROM import_ref WHERE file_id = ?", fileId);
+    // What a language server said about this file's code may no longer hold; the editor says it again after the change.
+    this.run("DELETE FROM edge WHERE src_file = ? AND source = 'lsp'", fileId);
   }
 
   removeFile(filePath: string) {
@@ -273,6 +289,30 @@ export class BrainStore {
     });
   }
 
+  /**
+   * Replaces what a language server said about `from`'s code. Kept apart from import edges: a re-index recomputes those and
+   * leaves these alone. Targets that are not indexed files are returned, not stored.
+   */
+  replaceLspEdges(from: string, edges: { to: string; kind: string }[]): { stored: number; skipped: string[] } | null {
+    const src = this.get<{ id: number }>("SELECT id FROM file WHERE path = ?", from);
+    if (!src) return null;
+    let stored = 0;
+    const skipped = new Set<string>();
+    this.transaction(() => {
+      this.run("DELETE FROM edge WHERE src_file = ? AND source = 'lsp'", src.id);
+      for (const e of edges) {
+        if (e.to === from) continue;
+        const r = this.run(
+          `INSERT OR IGNORE INTO edge (src_file, dst_file, kind, source, confidence)
+           SELECT ?, b.id, ?, 'lsp', 'resolved' FROM file b WHERE b.path = ?`,
+          src.id, e.kind, e.to,
+        );
+        if (r.changes) stored++; else if (!this.hasFile(e.to)) skipped.add(e.to);
+      }
+    });
+    return { stored, skipped: [...skipped].sort() };
+  }
+
   /** Files one hop away. `out` = what the file imports, `in` = what imports it. */
   neighbours(filePath: string, direction: "in" | "out"): EdgeRow[] {
     const sql =
@@ -281,7 +321,7 @@ export class BrainStore {
            JOIN file a ON a.id = e.src_file JOIN file b ON b.id = e.dst_file WHERE a.path = ? ORDER BY b.path`
         : `SELECT a.path AS "from", b.path AS "to", e.kind, e.source, e.confidence FROM edge e
            JOIN file a ON a.id = e.src_file JOIN file b ON b.id = e.dst_file WHERE b.path = ? ORDER BY a.path`;
-    return this.all<EdgeRow>(sql, filePath);
+    return onePerPair(this.all<EdgeRow>(sql, filePath));
   }
 
   hasFile(filePath: string): boolean {
@@ -345,7 +385,7 @@ export class BrainStore {
     return {
       files: n("SELECT COUNT(*) AS n FROM file"),
       symbols: n("SELECT COUNT(*) AS n FROM symbol"),
-      edges: n("SELECT COUNT(*) AS n FROM edge"),
+      edges: n("SELECT COUNT(*) AS n FROM (SELECT DISTINCT src_file, dst_file FROM edge)"),
       byLanguage,
       lastIndexedAt: this.get<{ t: string | null }>("SELECT MAX(indexed_at) AS t FROM file")?.t ?? null,
     };
@@ -358,8 +398,8 @@ export class BrainStore {
     return this.all(
       `SELECT f.path, f.content_hash,
               (SELECT COUNT(*) FROM symbol s WHERE s.file_id = f.id) AS symbols,
-              (SELECT COUNT(*) FROM edge e WHERE e.dst_file = f.id) AS imported_by,
-              (SELECT COUNT(*) FROM edge e WHERE e.src_file = f.id) AS imports
+              (SELECT COUNT(DISTINCT e.src_file) FROM edge e WHERE e.dst_file = f.id) AS imported_by,
+              (SELECT COUNT(DISTINCT e.dst_file) FROM edge e WHERE e.src_file = f.id) AS imports
        FROM file f WHERE f.parsed = 1 AND f.content_hash IS NOT NULL ORDER BY f.path`,
     );
   }
@@ -369,17 +409,17 @@ export class BrainStore {
     return this.all(
       `SELECT f.path, f.lang,
               (SELECT COUNT(*) FROM symbol s WHERE s.file_id = f.id) AS symbols,
-              (SELECT COUNT(*) FROM edge e WHERE e.dst_file = f.id) AS imported_by,
-              (SELECT COUNT(*) FROM edge e WHERE e.src_file = f.id) AS imports
+              (SELECT COUNT(DISTINCT e.src_file) FROM edge e WHERE e.dst_file = f.id) AS imported_by,
+              (SELECT COUNT(DISTINCT e.dst_file) FROM edge e WHERE e.src_file = f.id) AS imports
        FROM file f WHERE f.parsed = 1 ORDER BY f.path`,
     );
   }
 
   allEdges(): EdgeRow[] {
-    return this.all<EdgeRow>(
+    return onePerPair(this.all<EdgeRow>(
       `SELECT a.path AS "from", b.path AS "to", e.kind, e.source, e.confidence FROM edge e
        JOIN file a ON a.id = e.src_file JOIN file b ON b.id = e.dst_file ORDER BY a.path, b.path`,
-    );
+    ));
   }
 
   fileHash(filePath: string): string | null {

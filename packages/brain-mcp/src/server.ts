@@ -16,6 +16,9 @@ import {
   ConfigSchema,
   HelloResult,
   PROTOCOL_VERSION,
+  PutEdgesInputSchema,
+  type PutEdgesInput,
+  type PutEdgesResult,
   ReindexResult,
   Resources,
   SYMBOL_KINDS,
@@ -323,7 +326,7 @@ export function createBrainCore(opts: BrainServerOptions) {
     },
   );
 
-  type Walked = { path: string; depth: number; via: string; confidence: string };
+  type Walked = { path: string; depth: number; via: string; confidence: string; kind: string; source: string };
   function walk(start: string, dir: "in" | "out", maxDepth: number): Walked[] {
     const seen = new Set([start]);
     const out: Walked[] = [];
@@ -335,7 +338,7 @@ export function createBrainCore(opts: BrainServerOptions) {
           const other = dir === "out" ? e.to : e.from;
           if (seen.has(other)) continue;
           seen.add(other);
-          out.push({ path: other, depth, via: file, confidence: e.confidence });
+          out.push({ path: other, depth, via: file, confidence: e.confidence, kind: e.kind, source: e.source });
           next.push(other);
         }
       }
@@ -635,6 +638,20 @@ export function createBrainCore(opts: BrainServerOptions) {
       } catch (e) {
         return fail((e as Error).message);
       }
+    }),
+  );
+
+  server.registerTool(
+    AdminTools.putEdges,
+    {
+      description: "Store what the editor's language server says about one file's code (calls, extends), replacing what it said before. Import edges are not touched. Targets that are not indexed files are skipped.",
+      inputSchema: PutEdgesInputSchema.shape,
+    },
+    guarded(async (input: PutEdgesInput) => {
+      const r = store.replaceLspEdges(input.from, input.edges);
+      if (!r) return fail(`“${input.from}” is not an indexed file.`);
+      if (r.stored > 0 || input.edges.length === 0) { notify(Resources.status); }
+      return json(r satisfies PutEdgesResult);
     }),
   );
 

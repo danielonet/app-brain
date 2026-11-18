@@ -11,6 +11,8 @@ import { GraphPanel } from "./graphPanel";
 import { SettingsPanel } from "./settingsPanel";
 import { ActivityItem, ConnState, ReviewRow, activityItems, bulkConfirmation, bulkResultMessage, bulkScopes, folderGroups, isPlainDraft, estimateDetail, estimateTitle, flashText, generationBarText, generationProblems, generationProgress, generationSummary, llmTestSummary, mcpConfigSnippet, reviewRows, statusBarText, validationReport, validationSummary } from "./format";
 import { resolveAutoMode } from "./agentDetect";
+import { EdgeBridge, SaveScheduler, relativeInside } from "./lspBridge";
+import { editorLanguageFacts } from "./lspProvider";
 import { daemonLlm, llmEnv, localProblems, validateApiKey } from "./llmEnv";
 import { ensureDaemon, stopDaemon } from "./daemonManager";
 import { sampleWithEditorModel } from "./lmBridge";
@@ -111,6 +113,7 @@ export async function activate(context: vscode.ExtensionContext) {
   };
 
   let warnedNoAgent = false;
+  const EDGE_EXTENSIONS = "ts,tsx,js,jsx,mjs,cjs,py,go,rs,java,cs";
   const API_KEY = "brain.llm.apiKey";
   const ADMIN_KEY = "brain.usage.anthropicAdminKey";
   /** What the providers report (Claude Code's local logs, the Anthropic organisation), for the cost view. */
@@ -347,6 +350,20 @@ export async function activate(context: vscode.ExtensionContext) {
 
   client = await make();
 
+  // After a save, ask the language server again about that file (call and inheritance links), one file at a time.
+  const edgeScheduler = new SaveScheduler(async (rel) => {
+    const c = client;
+    if (!c?.current?.initialised || !cfg().get<boolean>("edges.languageServer", true)) return;
+    await new EdgeBridge(folder.uri.fsPath, editorLanguageFacts, c).analyse(rel);
+  });
+  context.subscriptions.push(
+    { dispose: () => edgeScheduler.dispose() },
+    vscode.workspace.onDidSaveTextDocument((doc) => {
+      const rel = doc.uri.scheme === "file" ? relativeInside(folder.uri.fsPath, doc.uri.fsPath) : null;
+      if (rel && new RegExp(`\\.(${EDGE_EXTENSIONS.split(",").join("|")})$`).test(rel)) edgeScheduler.schedule(rel);
+    }),
+  );
+
   /** Starts a fresh server, e.g. after the LLM settings or the key changed. */
   const restart = async () => {
     await client?.stop();
@@ -381,6 +398,27 @@ export async function activate(context: vscode.ExtensionContext) {
           r.alreadyInitialised ? "Brain is already initialised." : `Brain initialised (${r.created.length} files created).`,
         );
         await client!.refresh();
+      }),
+    ),
+    vscode.commands.registerCommand("brain.updateSemanticEdges", () =>
+      run("update semantic edges", async () => {
+        const c = client;
+        if (!c?.current?.initialised) throw new Error("Initialise the .brain folder first.");
+        const files = (await vscode.workspace.findFiles(`**/*.{${EDGE_EXTENSIONS}}`, "**/{node_modules,.git,.brain,dist,out,build,vendor,__pycache__}/**", 3000)).map((u) => relativeInside(folder.uri.fsPath, u.fsPath)).filter((r): r is string => r !== null);
+        if (files.length === 0) { void vscode.window.showInformationMessage("Brain: no source files found."); return; }
+        const bridge = new EdgeBridge(folder.uri.fsPath, editorLanguageFacts, c);
+        const r = await vscode.window.withProgress(
+          { location: vscode.ProgressLocation.Notification, title: "Brain: asking your language servers how files relate", cancellable: true },
+          (progress, token) => {
+            let last = 0;
+            return bridge.analyseMany(files, (done, total) => { progress.report({ message: `${done} of ${total}`, increment: ((done - last) / total) * 100 }); last = done; }, () => token.isCancellationRequested);
+          },
+        );
+        void vscode.window.showInformationMessage(
+          r.sent === 0
+            ? "Brain: your language servers returned nothing. Open a file of that language, wait until its language support has started, and try again."
+            : `Brain: stored ${r.edges} call and inheritance links from ${r.sent} files${r.empty ? ` (${r.empty} files had no answer yet)` : ""}.`,
+        );
       }),
     ),
     vscode.commands.registerCommand("brain.reindex", () =>

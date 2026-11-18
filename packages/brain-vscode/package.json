@@ -36,6 +36,7 @@
       { "command": "brain.start", "title": "Brain: Start Server" },
       { "command": "brain.stop", "title": "Brain: Stop Server" },
       { "command": "brain.reindex", "title": "Brain: Reindex Workspace" },
+      { "command": "brain.updateSemanticEdges", "title": "Brain: Update Call and Inheritance Links (language servers)" },
       { "command": "brain.openSettings", "title": "Brain: Open Settings", "icon": "$(gear)" },
       { "command": "brain.generateDocs", "title": "Brain: Generate Docs…", "icon": "$(sparkle)" },
       { "command": "brain.cancelGeneration", "title": "Brain: Cancel Doc Generation" },
@@ -93,6 +94,11 @@
           "type": "boolean",
           "default": true,
           "markdownDescription": "Show Claude Code's usage in this workspace in **Cost & Models**, read from the session logs Claude Code keeps on this machine (`~/.claude/projects`, or `CLAUDE_CONFIG_DIR`). Only token counts, the model and the time are read; nothing you or Claude wrote is looked at or sent anywhere."
+        },
+        "brain.edges.languageServer": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "After you save a file, ask this editor's language servers (the ones your language extensions provide) which files its code calls and extends, and store that beside the import links. Nothing leaves your machine. Run **Brain: Update Call and Inheritance Links** to do it for the whole workspace."
         },
         "brain.usage.copilotLogs": {
           "type": "boolean",

@@ -239,6 +239,29 @@ describe("incremental indexing and persistence", () => {
   before(() => { ws = fixture(); });
   after(() => cleanDir(ws));
 
+  it("takes language-server edges from the extension only, and shows them to agents with their source", async () => {
+    const agent = await connect(ws, { watch: false });
+    try {
+      await ready(agent);
+      const refused = (await agent.callTool({ name: AdminTools.putEdges, arguments: { from: "src/http/login.ts", edges: [] } })) as { isError?: boolean };
+      assert.equal(refused.isError, true, "an agent cannot write edges");
+    } finally { await agent.close(); }
+    const c = await connect(ws, { admin: true, watch: false });
+    try {
+      await ready(c);
+      const put = await tool(c, AdminTools.putEdges, { from: "src/http/login.ts", edges: [{ to: "src/db/pool.ts", kind: "calls" }, { to: "src/auth/session.ts", kind: "calls" }, { to: "lib/outside.ts", kind: "calls" }] });
+      assert.deepEqual(put.body, { stored: 2, skipped: ["lib/outside.ts"] });
+      const out = (await tool(c, AgentTools.getNeighbors, { path: "src/http/login.ts", direction: "out" })).body;
+      assert.equal(out.imports.find((e: { path: string }) => e.path === "src/auth/session.ts").source, "treesitter", "an import wins when a pair has both");
+      await tool(c, AdminTools.putEdges, { from: "src/http/login.ts", edges: [{ to: "svc/users.py", kind: "calls" }] });
+      const calls = (await tool(c, AgentTools.getNeighbors, { path: "src/http/login.ts", direction: "out" })).body.imports.find((e: { path: string }) => e.path === "svc/users.py");
+      assert.deepEqual([calls.kind, calls.source, calls.confidence], ["calls", "lsp", "resolved"]);
+      assert.equal((await tool(c, AdminTools.putEdges, { from: "no/such.ts", edges: [] })).isError, true);
+      const bad = (await c.callTool({ name: AdminTools.putEdges, arguments: { from: "src/http/login.ts", edges: [{ to: "x", kind: "wat" }] } })) as { isError?: boolean };
+      assert.equal(bad.isError, true, "an unknown kind is refused");
+    } finally { await c.close(); }
+  });
+
   it("reparses only changed files, drops deleted ones, and survives a restart after init", async () => {
     const c = await connect(ws, { admin: true, watch: false });
     try {
