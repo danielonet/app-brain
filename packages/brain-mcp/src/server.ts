@@ -16,6 +16,9 @@ import {
   ConfigSchema,
   HelloResult,
   PROTOCOL_VERSION,
+  PutEdgesInputSchema,
+  type PutEdgesInput,
+  type PutEdgesResult,
   ReindexResult,
   Resources,
   SYMBOL_KINDS,
@@ -118,6 +121,7 @@ export function createBrainCore(opts: BrainServerOptions) {
     () => {
       notify(Resources.pendingReview);
       notify(Resources.coverage);
+      notify(Resources.docStatus);
       notify(Resources.status);
     },
     () => state.state === "idle",
@@ -244,6 +248,7 @@ export function createBrainCore(opts: BrainServerOptions) {
   resource("config", Resources.config, "Brain config", "Team config (.brain/config.json), or defaults when not initialised.", () => ws.readConfig());
   resource("pending-review", Resources.pendingReview, "Pending review", "Generated docs in drafts/ waiting for a human to approve or reject them.", () => knowledge.pending());
   resource("coverage", Resources.coverage, "Documentation coverage", "How many files and modules have reviewed, draft or stale docs.", () => knowledge.coverage());
+  resource("doc-status", Resources.docStatus, "Documentation status", "Every file and module with its doc status (none, draft, reviewed, stale) and where the doc is.", async () => ({ items: await knowledge.docStatuses() }));
   resource("generation", Resources.generation, "Doc generation", "Progress and results of the server's doc generation job.", () => generator.state);
   resource("cost-summary", Resources.costSummary, "LLM cost", "Spend, tokens and models behind generated docs, with how much of it is exact versus estimated.", costSummary);
   resource("usage", Resources.usage, "Agent usage", "Recent calls agents made to the brain tools, with totals by client and tool.", () => store.usageSummary());
@@ -323,7 +328,7 @@ export function createBrainCore(opts: BrainServerOptions) {
     },
   );
 
-  type Walked = { path: string; depth: number; via: string; confidence: string };
+  type Walked = { path: string; depth: number; via: string; confidence: string; kind: string; source: string };
   function walk(start: string, dir: "in" | "out", maxDepth: number): Walked[] {
     const seen = new Set([start]);
     const out: Walked[] = [];
@@ -335,7 +340,7 @@ export function createBrainCore(opts: BrainServerOptions) {
           const other = dir === "out" ? e.to : e.from;
           if (seen.has(other)) continue;
           seen.add(other);
-          out.push({ path: other, depth, via: file, confidence: e.confidence });
+          out.push({ path: other, depth, via: file, confidence: e.confidence, kind: e.kind, source: e.source });
           next.push(other);
         }
       }
@@ -635,6 +640,20 @@ export function createBrainCore(opts: BrainServerOptions) {
       } catch (e) {
         return fail((e as Error).message);
       }
+    }),
+  );
+
+  server.registerTool(
+    AdminTools.putEdges,
+    {
+      description: "Store what the editor's language server says about one file's code (calls, extends), replacing what it said before. Import edges are not touched. Targets that are not indexed files are skipped.",
+      inputSchema: PutEdgesInputSchema.shape,
+    },
+    guarded(async (input: PutEdgesInput) => {
+      const r = store.replaceLspEdges(input.from, input.edges);
+      if (!r) return fail(`“${input.from}” is not an indexed file.`);
+      if (r.stored > 0 || input.edges.length === 0) { notify(Resources.status); }
+      return json(r satisfies PutEdgesResult);
     }),
   );
 

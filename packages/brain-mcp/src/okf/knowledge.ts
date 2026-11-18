@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
+import type { DocStatusItem } from "@app-brain/brain-protocol";
 import {
   Coverage, DocKind, DocStatus, PendingItem, ReviewManyResult, ReviewResult, TrustTier, ValidationIssue, ValidationResult,
 } from "@app-brain/brain-protocol";
@@ -160,6 +161,18 @@ export class Knowledge {
       index.set(`${t.kind}:${t.target}`, { status, trust });
     }
     return index;
+  }
+
+  /** Every documentable file and module with its doc status and where the doc is, for the editor's coverage view and CodeLens. */
+  async docStatuses(): Promise<DocStatusItem[]> {
+    const { states, targets } = await this.states();
+    return targets.map((t): DocStatusItem => {
+      const s = states.get(`${t.kind}:${t.target}`)!;
+      const cp = conceptPathFor(t.kind, t.target);
+      if (s.reviewed) return { kind: t.kind, target: t.target, status: Knowledge.builtFrom(s.reviewed) === s.hash ? "reviewed" : "stale", docFile: this.bundle.rel("knowledge", cp) };
+      if (s.draft) return { kind: t.kind, target: t.target, status: "draft", docFile: this.bundle.rel("drafts", cp) };
+      return { kind: t.kind, target: t.target, status: "none", docFile: null };
+    });
   }
 
   /**

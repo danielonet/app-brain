@@ -19,6 +19,7 @@ export const Resources = {
   usage: "brain://usage",
   pendingReview: "brain://knowledge/pending-review",
   coverage: "brain://coverage",
+  docStatus: "brain://docs/status",
   costSummary: "brain://cost/summary",
   generation: "brain://generation",
 } as const;
@@ -56,6 +57,7 @@ export const AdminTools = {
   estimateGeneration: "brain_admin_estimate_generation",
   generateDocs: "brain_admin_generate_docs",
   cancelGeneration: "brain_admin_cancel_generation",
+  putEdges: "brain_admin_put_edges",
 } as const;
 
 export const ENV_ADMIN_TOKEN = "BRAIN_ADMIN_TOKEN";
@@ -214,6 +216,22 @@ export const ReindexResultSchema = z.object({
 });
 export type ReindexResult = z.infer<typeof ReindexResultSchema>;
 
+/** What a language server can say about how files relate, beyond what an import shows. */
+export const LSP_EDGE_KINDS = ["calls", "extends"] as const;
+export type LspEdgeKind = (typeof LSP_EDGE_KINDS)[number];
+export const MAX_LSP_EDGES_PER_FILE = 500;
+
+export const PutEdgesInputSchema = z.object({
+  from: z.string().min(1).describe("The workspace-relative file the edges start from."),
+  edges: z.array(z.object({ to: z.string().min(1), kind: z.enum(LSP_EDGE_KINDS) })).max(MAX_LSP_EDGES_PER_FILE),
+});
+export type PutEdgesInput = z.infer<typeof PutEdgesInputSchema>;
+export interface PutEdgesResult {
+  stored: number;
+  /** Targets that are not indexed files (a library, a generated file): skipped, not an error. */
+  skipped: string[];
+}
+
 /** Returned (as `isError` tool content) when config validation fails. */
 export interface ConfigError {
   /** Dotted, for humans and logs. Ambiguous when a key contains a dot (model ids do). */
@@ -274,6 +292,15 @@ export const CoverageSchema = z.object({
   modules: z.object({ total: z.number().int(), reviewed: z.number().int(), drafts: z.number().int(), stale: z.number().int() }),
 });
 export type Coverage = z.infer<typeof CoverageSchema>;
+
+/** One file or module and what its documentation looks like now. For the coverage view and the stale-doc CodeLens. */
+export interface DocStatusItem {
+  kind: "file" | "module";
+  target: string;
+  status: "none" | "draft" | "reviewed" | "stale";
+  /** The reviewed doc (or, when there is only a draft, the draft), workspace-relative. Null when there is none. */
+  docFile: string | null;
+}
 
 export const ValidationIssueSchema = z.object({
   severity: z.enum(["error", "warning", "info"]),
