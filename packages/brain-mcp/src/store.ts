@@ -61,6 +61,11 @@ function onePerPair(rows: EdgeRow[]): EdgeRow[] {
   return [...best.values()];
 }
 
+/** A copy, so the floats are aligned whatever offset the database handed the bytes at. */
+function toFloats(b: Uint8Array): Float32Array {
+  return new Float32Array(b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength));
+}
+
 export interface EdgeRow {
   from: string;
   to: string;
@@ -141,6 +146,12 @@ export class BrainStore {
         kind TEXT NOT NULL, source TEXT NOT NULL, confidence TEXT NOT NULL,
         PRIMARY KEY (src_file, dst_file, kind));
       CREATE INDEX IF NOT EXISTS edge_dst ON edge(dst_file);
+      CREATE TABLE IF NOT EXISTS symbol_vec (
+        symbol_id INTEGER PRIMARY KEY REFERENCES symbol(id) ON DELETE CASCADE,
+        model TEXT NOT NULL, hash TEXT NOT NULL, vec BLOB NOT NULL);
+      CREATE INDEX IF NOT EXISTS symbol_vec_model ON symbol_vec(model);
+      CREATE TABLE IF NOT EXISTS vec_cache (
+        hash TEXT NOT NULL, model TEXT NOT NULL, vec BLOB NOT NULL, PRIMARY KEY (hash, model));
       CREATE VIRTUAL TABLE IF NOT EXISTS symbol_fts USING fts5(
         words, qualified_name, signature, docstring, path, tokenize = 'porter unicode61 remove_diacritics 2');
       CREATE TABLE IF NOT EXISTS llm_call (
@@ -359,6 +370,68 @@ export class BrainStore {
       return { total, hits };
     }
     return { total: 0, hits: [] };
+  }
+
+  // ---- embeddings ------------------------------------------------------------
+
+  /** Symbols with no vector for `model` yet, with what is embedded about them. */
+  symbolsNeedingVectors(model: string, limit: number): { id: number; kind: string; qualified_name: string; signature: string; docstring: string | null; path: string }[] {
+    return this.all(
+      `SELECT s.id, s.kind, s.qualified_name, s.signature, s.docstring, f.path FROM symbol s JOIN file f ON f.id = s.file_id
+       WHERE NOT EXISTS (SELECT 1 FROM symbol_vec v WHERE v.symbol_id = s.id AND v.model = ?) ORDER BY s.id LIMIT ?`,
+      model, limit,
+    );
+  }
+
+  vectorCounts(model: string): { have: number; total: number } {
+    return {
+      have: this.get<{ n: number }>("SELECT COUNT(*) AS n FROM symbol_vec WHERE model = ?", model)!.n,
+      total: this.get<{ n: number }>("SELECT COUNT(*) AS n FROM symbol")!.n,
+    };
+  }
+
+  cachedVector(hash: string, model: string): Float32Array | null {
+    const r = this.get<{ vec: Uint8Array }>("SELECT vec FROM vec_cache WHERE hash = ? AND model = ?", hash, model);
+    return r ? toFloats(r.vec) : null;
+  }
+
+  putVectors(model: string, rows: { symbolId: number; hash: string; vec: Float32Array }[]) {
+    this.transaction(() => {
+      for (const r of rows) {
+        const blob = new Uint8Array(r.vec.buffer, r.vec.byteOffset, r.vec.byteLength);
+        this.run("INSERT OR REPLACE INTO symbol_vec (symbol_id, model, hash, vec) VALUES (?,?,?,?)", r.symbolId, model, r.hash, blob);
+        this.run("INSERT OR REPLACE INTO vec_cache (hash, model, vec) VALUES (?,?,?)", r.hash, model, blob);
+      }
+    });
+  }
+
+  /** Vectors of a model no longer in use, and cache entries no symbol uses. Run after a complete sync, so nothing needed is lost. */
+  pruneVectors(keepModel: string) {
+    this.run("DELETE FROM symbol_vec WHERE model != ?", keepModel);
+    this.run("DELETE FROM vec_cache WHERE model != ? OR hash NOT IN (SELECT hash FROM symbol_vec)", keepModel);
+  }
+
+  /** Every vector for `model`, as one block of memory, for a similarity scan. */
+  loadVectors(model: string): { ids: number[]; dim: number; data: Float32Array } {
+    const rows = this.all<{ symbol_id: number; vec: Uint8Array }>("SELECT symbol_id, vec FROM symbol_vec WHERE model = ? ORDER BY symbol_id", model);
+    if (rows.length === 0) return { ids: [], dim: 0, data: new Float32Array(0) };
+    const dim = rows[0].vec.byteLength / 4;
+    const data = new Float32Array(rows.length * dim);
+    const ids: number[] = [];
+    rows.forEach((r, i) => {
+      if (r.vec.byteLength / 4 === dim) { data.set(toFloats(r.vec), ids.length * dim); ids.push(r.symbol_id); }
+    });
+    return { ids, dim, data: data.subarray(0, ids.length * dim) };
+  }
+
+  symbolsByIds(ids: number[]): SymbolHit[] {
+    if (ids.length === 0) return [];
+    const rows = this.all<SymbolHit>(
+      `SELECT ${BrainStore.SYMBOL_COLUMNS} FROM symbol s JOIN file f ON f.id = s.file_id WHERE s.id IN (${ids.map(() => "?").join(",")})`,
+      ...ids,
+    );
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    return ids.map((i) => byId.get(i)).filter((r): r is SymbolHit => r !== undefined);
   }
 
   /** Exact lookup by qualified name, then by plain name. */

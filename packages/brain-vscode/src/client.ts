@@ -15,6 +15,7 @@ import {
   PendingItem,
   type DocStatusItem,
   type PutEdgesInput,
+  type EmbeddingStatus,
   type PutEdgesResult,
   ReviewManyResult,
   ReviewResult,
@@ -361,6 +362,9 @@ export class BrainClient {
 
   initialise(): Promise<InitResult> {
     return this.call<InitResult>(AdminTools.init);
+  }
+  setEmbeddings(input: { model: string; baseUrl: string }): Promise<EmbeddingStatus> {
+    return this.call<EmbeddingStatus>(AdminTools.setEmbeddings, input);
   }
   putEdges(input: PutEdgesInput): Promise<PutEdgesResult> {
     return this.call<PutEdgesResult>(AdminTools.putEdges, input);

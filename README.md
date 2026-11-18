@@ -140,6 +140,14 @@ Every document written is recorded with the model, the token counts and where th
 
 Settings: `brain.usage.claudeCodeLogs`, `brain.usage.copilotLogs`, `brain.usage.anthropicAdmin.enabled`, `brain.usage.lookbackDays` (1 to 90, default 30). Cursor is not included yet: its usage API is for team admins.
 
+### Semantic search
+
+Off by default. Set `brain.search.embeddings.model` to an embedding model your local server runs (for example `ollama pull nomic-embed-text`, then `nomic-embed-text`) and `search_code` finds code by meaning as well as by words: "sign a user in" finds `verifyCredentials`. Keyword and meaning results are merged (reciprocal rank), so an exact name still comes first. Agents can force either with `mode: "keyword"` or `"semantic"`.
+
+- Only symbol names, signatures, doc comments and paths are embedded, never function bodies. They go to the URL in `brain.search.embeddings.baseUrl` (default: local Ollama). If that is not your machine, that text leaves it.
+- The address is a personal setting sent by the extension each time it connects. It is never read from `.brain/config.json`, so a cloned repository cannot choose where your code goes.
+- Vectors are computed in the background after each index run, kept in the local database, and reused when a symbol's text is unchanged. If the embedding server is down, search falls back to keywords and says so. **Brain: Check Semantic Search** shows progress.
+
 ### Call and inheritance links, and the editor surfaces
 
 - **Language-server links.** After you save a file, the extension asks the editor's own language servers (call hierarchy and type hierarchy, so whatever your language extensions provide) which files that file's code calls and extends, and stores them beside the import links (`source: lsp`). Run **Brain: Update Call and Inheritance Links** for the whole workspace. Nothing leaves your machine. If no language server answers, nothing is changed. Turn it off with `brain.edges.languageServer`.
@@ -177,7 +185,7 @@ By default (`brain.server.transport`: `http`) the extension starts one `brain-mc
 
 **Built:** the index and agent tools; the OKF knowledge base with drafts, review, bulk review, feedback and validation; generation by an agent, the editor's model, a Claude API key or a local model; the shared daemon and its security; the dependency graph; cost reporting and provider usage for Claude; the settings form; CI on Linux, macOS and Windows, and publishing to the Marketplace.
 
-**Not built yet:** notes (`add_note`) and MCP prompts; SCIP import (call and inheritance links come from the editor's language servers when you have them, otherwise edges are tree-sitter import matches); embeddings and semantic search; diff and edit inside the Review Queue, feedback buttons; usage levels 2 and 3; Cursor usage; automatic generation after indexing (`docs.autoGenerate` is reserved and does nothing); a CLI and a docs site export; more languages. And the benchmarks that would show whether any of this makes agents better.
+**Not built yet:** notes (`add_note`) and MCP prompts; SCIP import (call and inheritance links come from the editor's language servers when you have them, otherwise edges are tree-sitter import matches); diff and edit inside the Review Queue, feedback buttons; usage levels 2 and 3; Cursor usage; automatic generation after indexing (`docs.autoGenerate` is reserved and does nothing); a CLI and a docs site export; more languages. And the benchmarks that would show whether any of this makes agents better.
 
 **Not yet checked by hand:** a full session in a real VS Code window, a real Anthropic Admin key, a real Ollama server, and macOS and Windows behaviour beyond what the tests cover. See [PLAN-VSCODE-EXTENSION.md](PLAN-VSCODE-EXTENSION.md) §13 for the detail and the order of what comes next.
 

@@ -12,6 +12,7 @@ import { SettingsPanel } from "./settingsPanel";
 import { ActivityItem, ConnState, ReviewRow, activityItems, bulkConfirmation, bulkResultMessage, bulkScopes, folderGroups, isPlainDraft, estimateDetail, estimateTitle, flashText, generationBarText, generationProblems, generationProgress, generationSummary, llmTestSummary, mcpConfigSnippet, reviewRows, statusBarText, validationReport, validationSummary } from "./format";
 import { resolveAutoMode } from "./agentDetect";
 import { coverageGroups, coverageSummary, connectionReport, lensFor, statusIcon, type CoverageGroup } from "./docSurfaces";
+import { embeddingsInput, searchReport } from "./searchStatus";
 import { EdgeBridge, SaveScheduler, relativeInside } from "./lspBridge";
 import { editorLanguageFacts } from "./lspProvider";
 import { daemonLlm, llmEnv, localProblems, validateApiKey } from "./llmEnv";
@@ -402,11 +403,18 @@ export async function activate(context: vscode.ExtensionContext) {
     }),
   );
 
+  /** Tells the server which embedding model to use. Sent at every connect, never read from a file in the repository. */
+  const pushEmbeddings = async () => {
+    try { await client?.setEmbeddings(embeddingsInput({ model: cfg().get<string>("search.embeddings.model", ""), baseUrl: cfg().get<string>("search.embeddings.baseUrl", "") })); }
+    catch (e) { out.appendLine(`could not set the embedding model: ${(e as Error).message}`); }
+  };
+
   /** Starts a fresh server, e.g. after the LLM settings or the key changed. */
   const restart = async () => {
     await client?.stop();
     client = await make();
     await client.start();
+    await pushEmbeddings();
   };
   context.subscriptions.push(
     // Sign in to Copilot after start-up and "auto" switches to it. Only restart when the answer actually changed.
@@ -418,6 +426,7 @@ export async function activate(context: vscode.ExtensionContext) {
       }
     }),
     vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration("brain.search.embeddings")) void pushEmbeddings();
       if (e.affectsConfiguration("brain.llm") || e.affectsConfiguration("brain.server.transport")) void restart().catch((err) => out.appendLine(`restart failed: ${(err as Error).message}`));
     }),
   );
@@ -473,6 +482,14 @@ export async function activate(context: vscode.ExtensionContext) {
         const buttons = r.level === "none" ? ["Copy MCP config for Claude Code"] : [];
         const pick = await (r.level === "ok" ? vscode.window.showInformationMessage : vscode.window.showWarningMessage)(`${r.title} ${r.lines.join(" ")}`, ...buttons);
         if (pick) await vscode.commands.executeCommand("brain.copyMcpConfig");
+      }),
+    ),
+    vscode.commands.registerCommand("brain.checkSemanticSearch", () =>
+      run("check semantic search", async () => {
+        await pushEmbeddings();
+        const r = searchReport(client?.current?.search?.embeddings);
+        const pick = await (r.level === "error" || r.level === "off" ? vscode.window.showWarningMessage : vscode.window.showInformationMessage)(r.text, ...(r.level === "off" || r.level === "error" ? ["Open settings"] : []));
+        if (pick) await vscode.commands.executeCommand("workbench.action.openSettings", "brain.search.embeddings");
       }),
     ),
     vscode.commands.registerCommand("brain.reindex", () =>
@@ -683,6 +700,7 @@ export async function activate(context: vscode.ExtensionContext) {
   }
 
   await client.start();
+  await pushEmbeddings();
 }
 
 class ReviewProvider implements vscode.TreeDataProvider<ReviewRow> {

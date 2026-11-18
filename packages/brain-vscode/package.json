@@ -37,6 +37,7 @@
       { "command": "brain.start", "title": "Brain: Start Server" },
       { "command": "brain.stop", "title": "Brain: Stop Server" },
       { "command": "brain.reindex", "title": "Brain: Reindex Workspace" },
+      { "command": "brain.checkSemanticSearch", "title": "Brain: Check Semantic Search" },
       { "command": "brain.checkAgentConnection", "title": "Brain: Check Agent Connection" },
       { "command": "brain.openDocFile", "title": "Brain: Open Documentation" },
       { "command": "brain.openCoverageItem", "title": "Brain: Open Coverage Item" },
@@ -100,6 +101,16 @@
           "type": "boolean",
           "default": true,
           "markdownDescription": "Show Claude Code's usage in this workspace in **Cost & Models**, read from the session logs Claude Code keeps on this machine (`~/.claude/projects`, or `CLAUDE_CONFIG_DIR`). Only token counts, the model and the time are read; nothing you or Claude wrote is looked at or sent anywhere."
+        },
+        "brain.search.embeddings.model": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Embedding model that lets search find code **by meaning** (for example “sign a user in” finds `login`). Empty keeps search to names and words. Run one on your machine, for example `nomic-embed-text` in Ollama (`ollama pull nomic-embed-text`). Only symbol names, signatures and doc comments are sent, never function bodies. Run **Brain: Check Semantic Search** to see progress."
+        },
+        "brain.search.embeddings.baseUrl": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "The embedding server's OpenAI-compatible URL, usually ending in `/v1`. Empty uses `http://localhost:11434/v1` (Ollama). If it is not on your machine, symbol names and doc comments are sent to it."
         },
         "brain.codeLens.docStatus": {
           "type": "boolean",
