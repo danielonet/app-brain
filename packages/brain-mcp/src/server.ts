@@ -121,6 +121,7 @@ export function createBrainCore(opts: BrainServerOptions) {
     () => {
       notify(Resources.pendingReview);
       notify(Resources.coverage);
+      notify(Resources.docStatus);
       notify(Resources.status);
     },
     () => state.state === "idle",
@@ -247,6 +248,7 @@ export function createBrainCore(opts: BrainServerOptions) {
   resource("config", Resources.config, "Brain config", "Team config (.brain/config.json), or defaults when not initialised.", () => ws.readConfig());
   resource("pending-review", Resources.pendingReview, "Pending review", "Generated docs in drafts/ waiting for a human to approve or reject them.", () => knowledge.pending());
   resource("coverage", Resources.coverage, "Documentation coverage", "How many files and modules have reviewed, draft or stale docs.", () => knowledge.coverage());
+  resource("doc-status", Resources.docStatus, "Documentation status", "Every file and module with its doc status (none, draft, reviewed, stale) and where the doc is.", async () => ({ items: await knowledge.docStatuses() }));
   resource("generation", Resources.generation, "Doc generation", "Progress and results of the server's doc generation job.", () => generator.state);
   resource("cost-summary", Resources.costSummary, "LLM cost", "Spend, tokens and models behind generated docs, with how much of it is exact versus estimated.", costSummary);
   resource("usage", Resources.usage, "Agent usage", "Recent calls agents made to the brain tools, with totals by client and tool.", () => store.usageSummary());

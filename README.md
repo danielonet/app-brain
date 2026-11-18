@@ -140,6 +140,13 @@ Every document written is recorded with the model, the token counts and where th
 
 Settings: `brain.usage.claudeCodeLogs`, `brain.usage.copilotLogs`, `brain.usage.anthropicAdmin.enabled`, `brain.usage.lookbackDays` (1 to 90, default 30). Cursor is not included yet: its usage API is for team admins.
 
+### Call and inheritance links, and the editor surfaces
+
+- **Language-server links.** After you save a file, the extension asks the editor's own language servers (call hierarchy and type hierarchy, so whatever your language extensions provide) which files that file's code calls and extends, and stores them beside the import links (`source: lsp`). Run **Brain: Update Call and Inheritance Links** for the whole workspace. Nothing leaves your machine. If no language server answers, nothing is changed. Turn it off with `brain.edges.languageServer`.
+- **Documentation Coverage** view: every file and module grouped as stale, draft, undocumented or reviewed, with the share reviewed.
+- **CodeLens** above a file whose doc is missing, waiting for review, or stale; a current doc shows nothing (`brain.codeLens.docStatus`).
+- **Brain: Check Agent Connection** says which agents are connected now and which have called the brain.
+
 ### One shared server, and its security
 
 By default (`brain.server.transport`: `http`) the extension starts one `brain-mcp` daemon per workspace on `127.0.0.1`, and every client uses it: the extension, and any agent whose usual stdio config quietly becomes a proxy to it. The code is indexed once, and the extension shows what agents ask as it happens.
@@ -170,7 +177,7 @@ By default (`brain.server.transport`: `http`) the extension starts one `brain-mc
 
 **Built:** the index and agent tools; the OKF knowledge base with drafts, review, bulk review, feedback and validation; generation by an agent, the editor's model, a Claude API key or a local model; the shared daemon and its security; the dependency graph; cost reporting and provider usage for Claude; the settings form; CI on Linux, macOS and Windows, and publishing to the Marketplace.
 
-**Not built yet:** notes (`add_note`) and MCP prompts; call edges from an LSP or SCIP (edges are tree-sitter name matches); embeddings and semantic search; CodeLens for stale docs, a Brain tree view and a coverage dashboard; diff and edit inside the Review Queue; usage levels 2 and 3; Cursor usage; automatic generation after indexing (`docs.autoGenerate` is reserved and does nothing); a CLI and a docs site export; more languages. And the benchmarks that would show whether any of this makes agents better.
+**Not built yet:** notes (`add_note`) and MCP prompts; SCIP import (call and inheritance links come from the editor's language servers when you have them, otherwise edges are tree-sitter import matches); embeddings and semantic search; diff and edit inside the Review Queue, feedback buttons; usage levels 2 and 3; Cursor usage; automatic generation after indexing (`docs.autoGenerate` is reserved and does nothing); a CLI and a docs site export; more languages. And the benchmarks that would show whether any of this makes agents better.
 
 **Not yet checked by hand:** a full session in a real VS Code window, a real Anthropic Admin key, a real Ollama server, and macOS and Windows behaviour beyond what the tests cover. See [PLAN-VSCODE-EXTENSION.md](PLAN-VSCODE-EXTENSION.md) §13 for the detail and the order of what comes next.
 

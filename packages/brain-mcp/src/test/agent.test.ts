@@ -262,6 +262,17 @@ describe("incremental indexing and persistence", () => {
     } finally { await c.close(); }
   });
 
+  it("reports every file's documentation status for the editor's coverage view", async () => {
+    const c = await connect(ws, { admin: true, watch: false });
+    try {
+      await ready(c);
+      const { items } = await readJson(c, Resources.docStatus);
+      const file = items.find((i: { kind: string; target: string }) => i.kind === "file" && i.target === "src/db/pool.ts");
+      assert.deepEqual([file.status, file.docFile], ["none", null]);
+      assert.ok(items.some((i: { kind: string }) => i.kind === "module"), "modules are listed too");
+    } finally { await c.close(); }
+  });
+
   it("reparses only changed files, drops deleted ones, and survives a restart after init", async () => {
     const c = await connect(ws, { admin: true, watch: false });
     try {

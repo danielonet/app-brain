@@ -13,6 +13,7 @@ import {
   InitResult,
   PROTOCOL_VERSION,
   PendingItem,
+  type DocStatusItem,
   type PutEdgesInput,
   type PutEdgesResult,
   ReviewManyResult,
@@ -47,6 +48,7 @@ export interface BrainClientOptions {
   onState: (state: ConnState, status: BrainStatus | null) => void;
   onUsage?: (usage: UsageSummary) => void;
   onPending?: (items: PendingItem[]) => void;
+  onDocStatus?: (items: DocStatusItem[]) => void;
   /** The server says cost data changed (a doc was written, reviewed, or prices were edited). */
   onCost?: () => void;
   /** Progress of the server's doc generation job. */
@@ -135,6 +137,7 @@ export class BrainClient {
         if (n.params.uri === Resources.status) this.quietly(this.refresh());
         else if (n.params.uri === Resources.usage) this.quietly(this.refreshUsage());
         else if (n.params.uri === Resources.pendingReview) this.quietly(this.refreshPending());
+        else if (n.params.uri === Resources.docStatus) this.quietly(this.refreshDocStatus());
         else if (n.params.uri === Resources.costSummary) this.opts.onCost?.();
         else if (n.params.uri === Resources.generation) this.quietly(this.refreshGeneration());
       });
@@ -160,12 +163,14 @@ export class BrainClient {
       await client.subscribeResource({ uri: Resources.status });
       await client.subscribeResource({ uri: Resources.usage });
       await client.subscribeResource({ uri: Resources.pendingReview });
+      await client.subscribeResource({ uri: Resources.docStatus });
       await client.subscribeResource({ uri: Resources.costSummary });
       await client.subscribeResource({ uri: Resources.generation });
       this.restarts = 0;
       await this.refresh();
       await this.refreshUsage();
       await this.refreshPending();
+      await this.refreshDocStatus();
     } catch (e) {
       this.opts.log(`start failed: ${(e as Error).message}`);
       await this.teardown();
@@ -264,6 +269,12 @@ export class BrainClient {
     if (!this.client || !this.opts.onPending) return;
     const res = await this.client.readResource({ uri: Resources.pendingReview });
     this.opts.onPending(JSON.parse((res.contents[0] as { text: string }).text) as PendingItem[]);
+  }
+
+  async refreshDocStatus(): Promise<void> {
+    if (!this.client || !this.opts.onDocStatus) return;
+    const res = await this.client.readResource({ uri: Resources.docStatus });
+    this.opts.onDocStatus((JSON.parse((res.contents[0] as { text: string }).text) as { items: DocStatusItem[] }).items);
   }
 
   review(target: string, action: "approve" | "reject", by: string, note?: string): Promise<ReviewResult> {

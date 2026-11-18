@@ -19,6 +19,7 @@ export const Resources = {
   usage: "brain://usage",
   pendingReview: "brain://knowledge/pending-review",
   coverage: "brain://coverage",
+  docStatus: "brain://docs/status",
   costSummary: "brain://cost/summary",
   generation: "brain://generation",
 } as const;
@@ -291,6 +292,15 @@ export const CoverageSchema = z.object({
   modules: z.object({ total: z.number().int(), reviewed: z.number().int(), drafts: z.number().int(), stale: z.number().int() }),
 });
 export type Coverage = z.infer<typeof CoverageSchema>;
+
+/** One file or module and what its documentation looks like now. For the coverage view and the stale-doc CodeLens. */
+export interface DocStatusItem {
+  kind: "file" | "module";
+  target: string;
+  status: "none" | "draft" | "reviewed" | "stale";
+  /** The reviewed doc (or, when there is only a draft, the draft), workspace-relative. Null when there is none. */
+  docFile: string | null;
+}
 
 export const ValidationIssueSchema = z.object({
   severity: z.enum(["error", "warning", "info"]),

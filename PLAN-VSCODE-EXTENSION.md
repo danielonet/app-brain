@@ -533,9 +533,9 @@ Marks: **done**, **partly**, **not yet**. §13 has the detail.
 ### 13.2 Not built yet
 
 - **Notes and prompts:** `add_note`, `read_notes`, and the `/onboard` and `/document-module` prompts.
-- **Better edges:** an LSP bridge, SCIP import, or the optional edge feeder (§9). Edges are tree-sitter name matches.
+- **Better edges:** SCIP import. The LSP bridge is built (`lspBridge.ts`: call and type hierarchy from the editor's language servers, stored as `source: lsp` edges); without a language server, edges are tree-sitter name matches.
 - **Search:** embeddings and combined semantic search.
-- **Extension surfaces:** the Brain tree view, CodeLens for stale docs, hover, the coverage dashboard, diff and edit inside the Review Queue, feedback buttons, Check Agent Connection.
+- **Extension surfaces:** diff and edit inside the Review Queue, feedback buttons. Built: the Documentation Coverage view, CodeLens and hover for doc status, Check Agent Connection.
 - **Usage levels 2 and 3** (§4.4): follow-up correlation, client hooks, per-session summary, estimated saving.
 - **Provider usage for Cursor.** Its usage API is for team admins. Copilot is done: it is read from the workspace's `chatSessions/*.jsonl` (see `copilotLogs.ts`).
 - **Automatic generation after indexing** (`docs.autoGenerate` is reserved and does nothing).

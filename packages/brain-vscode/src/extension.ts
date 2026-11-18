@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as vscode from "vscode";
-import { readDaemonInfo, runtimeDir, workspaceKey, type BrainStatus, type GenerationScope, type GenerationState, type PendingItem, type UsageSummary } from "@app-brain/brain-protocol";
+import { readDaemonInfo, runtimeDir, workspaceKey, type BrainStatus, type DocStatusItem, type GenerationScope, type GenerationState, type PendingItem, type UsageSummary } from "@app-brain/brain-protocol";
 import { BrainClient } from "./client";
 import { CostPanel } from "./costPanel";
 import { collectProviderUsage } from "./providerUsage";
@@ -11,6 +11,7 @@ import { GraphPanel } from "./graphPanel";
 import { SettingsPanel } from "./settingsPanel";
 import { ActivityItem, ConnState, ReviewRow, activityItems, bulkConfirmation, bulkResultMessage, bulkScopes, folderGroups, isPlainDraft, estimateDetail, estimateTitle, flashText, generationBarText, generationProblems, generationProgress, generationSummary, llmTestSummary, mcpConfigSnippet, reviewRows, statusBarText, validationReport, validationSummary } from "./format";
 import { resolveAutoMode } from "./agentDetect";
+import { coverageGroups, coverageSummary, connectionReport, lensFor, statusIcon, type CoverageGroup } from "./docSurfaces";
 import { EdgeBridge, SaveScheduler, relativeInside } from "./lspBridge";
 import { editorLanguageFacts } from "./lspProvider";
 import { daemonLlm, llmEnv, localProblems, validateApiKey } from "./llmEnv";
@@ -62,7 +63,9 @@ export async function activate(context: vscode.ExtensionContext) {
   // Level 1 of "did the agent use the brain": show it the moment a tool is called.
   let lastSeenCall = -1;
   let flashTimer: NodeJS.Timeout | undefined;
+  let lastUsage: UsageSummary | null = null;
   const onUsage = (usage: UsageSummary) => {
+    lastUsage = usage;
     activity.update(usage);
     const newest = usage.recent[0];
     if (!newest) return;
@@ -83,6 +86,40 @@ export async function activate(context: vscode.ExtensionContext) {
     review.update(items);
     reviewView.badge = items.length ? { value: items.length, tooltip: `${items.length} generated doc${items.length === 1 ? "" : "s"} to review` } : undefined;
   };
+
+  // What every file's documentation looks like now: the coverage tree and the CodeLens read it.
+  const coverage = new CoverageProvider();
+  let docStatus: DocStatusItem[] = [];
+  const lensChanged = new vscode.EventEmitter<void>();
+  const coverageView = vscode.window.createTreeView("brain.coverage", { treeDataProvider: coverage });
+  const onDocStatus = (items: DocStatusItem[]) => {
+    docStatus = items;
+    coverage.update(items);
+    coverageView.description = coverageSummary(items).replace(/ \(.*$/, "").replace(/,.*$/, "");
+    lensChanged.fire();
+  };
+  context.subscriptions.push(
+    coverageView,
+    vscode.languages.registerCodeLensProvider({ scheme: "file" }, {
+      onDidChangeCodeLenses: lensChanged.event,
+      provideCodeLenses(doc) {
+        if (!cfg().get<boolean>("codeLens.docStatus", true)) return [];
+        const rel = relativeInside(folder.uri.fsPath, doc.uri.fsPath);
+        const item = rel ? docStatus.find((d) => d.kind === "file" && d.target === rel) : undefined;
+        const lens = lensFor(item);
+        if (!lens) return [];
+        return [new vscode.CodeLens(new vscode.Range(0, 0, 0, 0), { title: lens.title, tooltip: lens.tooltip, command: lens.command === "openDoc" ? "brain.openDocFile" : "brain.generateDocs", arguments: lens.command === "openDoc" ? [item!.docFile] : [] })];
+      },
+    }),
+    vscode.languages.registerHoverProvider({ scheme: "file" }, {
+      provideHover(doc, pos) {
+        if (!cfg().get<boolean>("codeLens.docStatus", true) || pos.line !== 0) return undefined;
+        const rel = relativeInside(folder.uri.fsPath, doc.uri.fsPath);
+        const item = rel ? docStatus.find((d) => d.kind === "file" && d.target === rel) : undefined;
+        return item && item.status !== "none" ? new vscode.Hover(`Brain: documentation is **${item.status}**.`) : undefined;
+      },
+    }),
+  );
 
   let lastConn: ConnState = "connecting";
   let promptedInit = false;
@@ -226,6 +263,7 @@ export async function activate(context: vscode.ExtensionContext) {
       onState,
       onUsage,
       onPending,
+      onDocStatus,
       onCost: () => CostPanel.refreshIfOpen(),
     });
   };
@@ -419,6 +457,22 @@ export async function activate(context: vscode.ExtensionContext) {
             ? "Brain: your language servers returned nothing. Open a file of that language, wait until its language support has started, and try again."
             : `Brain: stored ${r.edges} call and inheritance links from ${r.sent} files${r.empty ? ` (${r.empty} files had no answer yet)` : ""}.`,
         );
+      }),
+    ),
+    vscode.commands.registerCommand("brain.openDocFile", async (docFile: string | null) => {
+      if (docFile) await vscode.window.showTextDocument(vscode.Uri.file(path.join(folder.uri.fsPath, docFile)));
+    }),
+    vscode.commands.registerCommand("brain.openCoverageItem", async (item: DocStatusItem) => {
+      if (item.docFile) await vscode.window.showTextDocument(vscode.Uri.file(path.join(folder.uri.fsPath, item.docFile)));
+      else if (item.kind === "file") await vscode.window.showTextDocument(vscode.Uri.file(path.join(folder.uri.fsPath, item.target)));
+      else await vscode.commands.executeCommand("revealInExplorer", vscode.Uri.file(path.join(folder.uri.fsPath, item.target)));
+    }),
+    vscode.commands.registerCommand("brain.checkAgentConnection", () =>
+      run("check agent connection", async () => {
+        const r = connectionReport(client?.current?.server.clients ?? [], lastUsage);
+        const buttons = r.level === "none" ? ["Copy MCP config for Claude Code"] : [];
+        const pick = await (r.level === "ok" ? vscode.window.showInformationMessage : vscode.window.showWarningMessage)(`${r.title} ${r.lines.join(" ")}`, ...buttons);
+        if (pick) await vscode.commands.executeCommand("brain.copyMcpConfig");
       }),
     ),
     vscode.commands.registerCommand("brain.reindex", () =>
@@ -649,6 +703,30 @@ class ReviewProvider implements vscode.TreeDataProvider<ReviewRow> {
     t.contextValue = "draft";
     t.iconPath = new vscode.ThemeIcon(r.stale ? "warning" : "note");
     t.command = { command: "brain.review.open", title: "Open Draft", arguments: [r] };
+    return t;
+  }
+}
+
+class CoverageProvider implements vscode.TreeDataProvider<CoverageGroup | DocStatusItem> {
+  private readonly changed = new vscode.EventEmitter<void>();
+  readonly onDidChangeTreeData = this.changed.event;
+  private groups: CoverageGroup[] = [];
+  update(items: DocStatusItem[]) { this.groups = coverageGroups(items); this.changed.fire(); }
+  getChildren(el?: CoverageGroup | DocStatusItem): (CoverageGroup | DocStatusItem)[] {
+    if (!el) return this.groups;
+    return "items" in el ? el.items : [];
+  }
+  getTreeItem(el: CoverageGroup | DocStatusItem): vscode.TreeItem {
+    if ("items" in el) {
+      const t = new vscode.TreeItem(el.label, el.status === "reviewed" ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.Expanded);
+      t.description = String(el.items.length);
+      t.iconPath = new vscode.ThemeIcon(statusIcon(el.status));
+      return t;
+    }
+    const t = new vscode.TreeItem(el.target);
+    t.description = el.kind;
+    t.iconPath = new vscode.ThemeIcon(el.kind === "module" ? "folder" : "file");
+    t.command = { command: "brain.openCoverageItem", title: "Open", arguments: [el] };
     return t;
   }
 }
