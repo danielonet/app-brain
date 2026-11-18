@@ -150,7 +150,7 @@ Off by default. Set `brain.search.embeddings.model` to an embedding model your l
 
 ### Call and inheritance links, and the editor surfaces
 
-- **Language-server links.** After you save a file, the extension asks the editor's own language servers (call hierarchy and type hierarchy, so whatever your language extensions provide) which files that file's code calls and extends, and stores them beside the import links (`source: lsp`). Run **Brain: Update Call and Inheritance Links** for the whole workspace. Nothing leaves your machine. If no language server answers, nothing is changed. Turn it off with `brain.edges.languageServer`.
+- **Language-server links.** After you save a file, the extension asks the editor's own language servers (call hierarchy and type hierarchy, so whatever your language extensions provide) which files that file's code calls and extends, and stores them beside the import links (`source: lsp`). Call links work with most languages; inheritance links only appear for languages whose server provides a type hierarchy (for example Java or C#; VS Code's built-in TypeScript support does not, so there a subclass is linked to its base only through the import link). Run **Brain: Update Call and Inheritance Links** for the whole workspace. Nothing leaves your machine. If no language server answers, nothing is changed. Turn it off with `brain.edges.languageServer`.
 - **Documentation Coverage** view: every file and module grouped as stale, draft, undocumented or reviewed, with the share reviewed.
 - **CodeLens** above a file whose doc is missing, waiting for review, or stale; a current doc shows nothing (`brain.codeLens.docStatus`).
 - **Brain: Check Agent Connection** says which agents are connected now and which have called the brain.
