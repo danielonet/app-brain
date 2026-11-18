@@ -2,7 +2,7 @@
   "name": "app-brain",
   "displayName": "App Brain",
   "description": "Configure and watch the app-brain MCP server: knowledge base and docs generated from your code.",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "private": true,
   "publisher": "danielonnet",
   "license": "MIT",
